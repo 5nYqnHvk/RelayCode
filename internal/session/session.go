@@ -17,13 +17,13 @@ import (
 
 // Entry is one cached session snapshot.
 type Entry struct {
-	Key              string    // fingerprint across all messages[:MessageCount]
-	Provider         string    // cfg provider name
-	UpstreamModel    string    // upstream model id
-	ToolsHash        string    // tools fingerprint
-	InstructionsHash string    // instructions fingerprint
-	MessageCount     int       // messages[:MessageCount] are covered by this session
-	ResponseID       string    // upstream response.id to chain from
+	Key              string // fingerprint across all messages[:MessageCount]
+	Provider         string // cfg provider name
+	UpstreamModel    string // upstream model id
+	ToolsHash        string // tools fingerprint
+	InstructionsHash string // instructions fingerprint
+	MessageCount     int    // messages[:MessageCount] are covered by this session
+	ResponseID       string // upstream response.id to chain from
 	LastUsed         time.Time
 	OutputTokens     int // cumulative output tokens for logging
 	InputTokens      int

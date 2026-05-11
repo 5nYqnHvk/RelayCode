@@ -156,9 +156,9 @@ type openaiMessage struct {
 }
 
 type openaiToolRef struct {
-	ID       string           `json:"id"`
-	Type     string           `json:"type"`
-	Function openaiToolRefFn  `json:"function"`
+	ID       string          `json:"id"`
+	Type     string          `json:"type"`
+	Function openaiToolRefFn `json:"function"`
 }
 
 type openaiToolRefFn struct {

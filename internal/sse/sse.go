@@ -218,11 +218,11 @@ func (b *Builder) StopTool(callID string) {
 	})
 }
 
-func (b *Builder) SetStopReason(r string)      { b.stopReason = r }
-func (b *Builder) SetOutputTokens(n int)       { b.outputTokens = n }
-func (b *Builder) AddOutputTokens(delta int)   { b.outputTokens += delta }
-func (b *Builder) AddInputTokens(delta int)    { b.inputTokens += delta }
-func (b *Builder) Finished() bool              { return b.finished }
+func (b *Builder) SetStopReason(r string)    { b.stopReason = r }
+func (b *Builder) SetOutputTokens(n int)     { b.outputTokens = n }
+func (b *Builder) AddOutputTokens(delta int) { b.outputTokens += delta }
+func (b *Builder) AddInputTokens(delta int)  { b.inputTokens += delta }
+func (b *Builder) Finished() bool            { return b.finished }
 
 func (b *Builder) closeText() {
 	if !b.textOpen {
