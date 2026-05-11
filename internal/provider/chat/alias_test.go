@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/5nYqnHvk/RelayCode/internal/anthropic"
+	"github.com/5nYqnHvk/RelayCode/internal/provider/toolargs"
 )
 
 func TestBuildRequestAliasesTypeArgument(t *testing.T) {
@@ -36,7 +37,7 @@ func TestBuildRequestAliasesTypeArgument(t *testing.T) {
 func TestRestoreToolArgsRestoresAliases(t *testing.T) {
 	aliases := map[string]map[string]string{"NotionLike": {"_fcc_arg_type": "type"}}
 	buffers := map[int]string{}
-	out, ok := restoreToolArgs(0, "NotionLike", `{"_fcc_arg_type":"page","nested":{"_fcc_arg_type":"child"}}`, aliases, buffers)
+	out, ok := toolargs.RestoreArgs(0, "NotionLike", `{"_fcc_arg_type":"page","nested":{"_fcc_arg_type":"child"}}`, aliases, buffers)
 	if !ok {
 		t.Fatal("restoreToolArgs buffered complete JSON")
 	}
@@ -48,10 +49,10 @@ func TestRestoreToolArgsRestoresAliases(t *testing.T) {
 func TestRestoreToolArgsBuffersPartialJSON(t *testing.T) {
 	aliases := map[string]map[string]string{"NotionLike": {"_fcc_arg_type": "type"}}
 	buffers := map[int]string{}
-	if out, ok := restoreToolArgs(0, "NotionLike", `{"_fcc_arg`, aliases, buffers); ok || out != "" {
+	if out, ok := toolargs.RestoreArgs(0, "NotionLike", `{"_fcc_arg`, aliases, buffers); ok || out != "" {
 		t.Fatalf("first restore out=%q ok=%v", out, ok)
 	}
-	out, ok := restoreToolArgs(0, "NotionLike", `_type":"page"}`, aliases, buffers)
+	out, ok := toolargs.RestoreArgs(0, "NotionLike", `_type":"page"}`, aliases, buffers)
 	if !ok || out != `{"type":"page"}` {
 		t.Fatalf("second restore out=%q ok=%v", out, ok)
 	}
