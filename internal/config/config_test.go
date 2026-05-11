@@ -15,6 +15,9 @@ func TestLoadParsesConfigAndExpandsEnv(t *testing.T) {
   host: 0.0.0.0
   port: 9090
   auth_token: "${TEST_RELAYCODE_TOKEN}"
+  enable_web_server_tools: true
+  web_fetch_allowed_schemes: https
+  web_fetch_allow_private_networks: true
 
 routes:
   - match: "opus"
@@ -30,6 +33,7 @@ providers:
     base_url: https://api.example.com/v1/
     api_key: "${TEST_RELAYCODE_KEY}"
     experimental_passthrough_server_tools: true
+    codex_auth_path: /tmp/codex-auth.json
   openai_chat:
     kind: openai_chat
     base_url: https://chat.example.com/v1
@@ -43,14 +47,21 @@ providers:
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
-	if cfg.Server.Host != "0.0.0.0" || cfg.Server.Port != 9090 || cfg.Server.AuthToken != "secret-token" {
+	if cfg.Server.Host != "0.0.0.0" || cfg.Server.Port != 9090 || cfg.Server.AuthToken != "secret-token" ||
+		!cfg.Server.EnableWebServerTools ||
+		cfg.Server.WebFetchAllowedSchemes != "https" ||
+		!cfg.Server.WebFetchAllowPrivateNetworks {
 		t.Fatalf("Server = %+v", cfg.Server)
 	}
 	if len(cfg.Routes) != 2 || cfg.Routes[0].Match != "opus" || cfg.Routes[1].Match != "*" {
 		t.Fatalf("Routes = %+v", cfg.Routes)
 	}
 	provider := cfg.Providers["openai_responses"]
-	if provider.Kind != KindOpenAIResponses || provider.BaseURL != "https://api.example.com/v1" || provider.APIKey != "secret-key" || !provider.ExperimentalPassthroughServerTools {
+	if provider.Kind != KindOpenAIResponses ||
+		provider.BaseURL != "https://api.example.com/v1" ||
+		provider.APIKey != "secret-key" ||
+		!provider.ExperimentalPassthroughServerTools ||
+		provider.CodexAuthPath != "/tmp/codex-auth.json" {
 		t.Fatalf("openai_responses provider = %+v", provider)
 	}
 	if cfg.Providers["openai_chat"].ExperimentalPassthroughServerTools {

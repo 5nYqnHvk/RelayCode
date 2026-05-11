@@ -30,6 +30,23 @@ func NewWriter(w http.ResponseWriter) *Writer {
 
 func (w *Writer) Err() error { return w.err }
 
+func (w *Writer) WriteRaw(line string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.err != nil {
+		return w.err
+	}
+	_, err := io.WriteString(w.w, line)
+	if err != nil {
+		w.err = err
+		return err
+	}
+	if w.fl != nil {
+		w.fl.Flush()
+	}
+	return nil
+}
+
 func (w *Writer) Event(event string, data any) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -70,8 +87,9 @@ type Builder struct {
 	tools      map[string]*toolState // keyed by upstream call id
 	toolsOrder []*toolState
 
-	stopReason string
-	finished   bool
+	serverToolUse map[string]int
+	stopReason    string
+	finished      bool
 }
 
 type toolState struct {
@@ -165,6 +183,22 @@ func (b *Builder) EmitThinking(chunk string) {
 }
 
 func (b *Builder) StartTool(callID, name string) {
+	b.startToolBlock(callID, name, "tool_use")
+}
+
+func (b *Builder) StartServerTool(callID, name string) {
+	b.StartServerToolWithInput(callID, name, map[string]any{})
+}
+
+func (b *Builder) StartServerToolWithInput(callID, name string, input any) {
+	b.startToolBlockWithInput(callID, name, "server_tool_use", input)
+}
+
+func (b *Builder) startToolBlock(callID, name, typ string) {
+	b.startToolBlockWithInput(callID, name, typ, map[string]any{})
+}
+
+func (b *Builder) startToolBlockWithInput(callID, name, typ string, input any) {
 	b.closeText()
 	b.closeThinking()
 	ts, ok := b.tools[callID]
@@ -183,10 +217,10 @@ func (b *Builder) StartTool(callID, name string) {
 		"type":  "content_block_start",
 		"index": ts.blockIndex,
 		"content_block": map[string]any{
-			"type":  "tool_use",
+			"type":  typ,
 			"id":    ts.id,
 			"name":  ts.name,
-			"input": map[string]any{},
+			"input": input,
 		},
 	})
 }
@@ -218,11 +252,47 @@ func (b *Builder) StopTool(callID string) {
 	})
 }
 
+func (b *Builder) EmitWebSearchResult(callID string, content any) {
+	b.EmitServerToolResult("web_search_tool_result", callID, content)
+}
+
+func (b *Builder) EmitServerToolResult(resultType, callID string, content any) {
+	b.closeText()
+	b.closeThinking()
+	b.closeAllTools()
+	index := b.alloc()
+	b.w.Event("content_block_start", map[string]any{
+		"type":  "content_block_start",
+		"index": index,
+		"content_block": map[string]any{
+			"type":        resultType,
+			"tool_use_id": callID,
+			"content":     content,
+		},
+	})
+	b.w.Event("content_block_stop", map[string]any{
+		"type":  "content_block_stop",
+		"index": index,
+	})
+}
+
+func (b *Builder) AddServerToolUse(key string, count int) {
+	if key == "" || count == 0 {
+		return
+	}
+	if b.serverToolUse == nil {
+		b.serverToolUse = map[string]int{}
+	}
+	b.serverToolUse[key] += count
+}
+
 func (b *Builder) SetStopReason(r string)    { b.stopReason = r }
 func (b *Builder) SetOutputTokens(n int)     { b.outputTokens = n }
 func (b *Builder) AddOutputTokens(delta int) { b.outputTokens += delta }
 func (b *Builder) AddInputTokens(delta int)  { b.inputTokens += delta }
 func (b *Builder) Finished() bool            { return b.finished }
+func (b *Builder) MarkFinished()             { b.finished = true }
+func (b *Builder) RawWriter() *Writer        { return b.w }
 
 func (b *Builder) closeText() {
 	if !b.textOpen {
@@ -264,13 +334,17 @@ func (b *Builder) Finish() {
 	if reason == "" {
 		reason = "end_turn"
 	}
+	usage := map[string]any{
+		"input_tokens":  b.inputTokens,
+		"output_tokens": b.outputTokens,
+	}
+	if len(b.serverToolUse) > 0 {
+		usage["server_tool_use"] = b.serverToolUse
+	}
 	b.w.Event("message_delta", map[string]any{
 		"type":  "message_delta",
 		"delta": map[string]any{"stop_reason": reason, "stop_sequence": nil},
-		"usage": map[string]any{
-			"input_tokens":  b.inputTokens,
-			"output_tokens": b.outputTokens,
-		},
+		"usage": usage,
 	})
 	b.w.Event("message_stop", map[string]any{"type": "message_stop"})
 }

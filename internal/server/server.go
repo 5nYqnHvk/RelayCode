@@ -18,12 +18,15 @@ import (
 
 	"github.com/relaycode/relaycode/internal/anthropic"
 	"github.com/relaycode/relaycode/internal/config"
+	"github.com/relaycode/relaycode/internal/optim"
 	"github.com/relaycode/relaycode/internal/provider"
+	anthropicprovider "github.com/relaycode/relaycode/internal/provider/anthropic"
 	"github.com/relaycode/relaycode/internal/provider/chat"
 	"github.com/relaycode/relaycode/internal/provider/responses"
 	"github.com/relaycode/relaycode/internal/router"
 	"github.com/relaycode/relaycode/internal/session"
 	"github.com/relaycode/relaycode/internal/sse"
+	"github.com/relaycode/relaycode/internal/webtools"
 )
 
 type Server struct {
@@ -36,7 +39,7 @@ type Server struct {
 
 func New(cfg *config.Config) (*Server, error) {
 	for name, pc := range cfg.Providers {
-		if pc.Kind != config.KindOpenAIChat && pc.Kind != config.KindOpenAIResponses {
+		if pc.Kind != config.KindOpenAIChat && pc.Kind != config.KindOpenAIResponses && pc.Kind != config.KindAnthropicMessages {
 			return nil, fmt.Errorf("provider %q: unsupported kind %q", name, pc.Kind)
 		}
 	}
@@ -62,6 +65,8 @@ func (s *Server) adapterFor(name string, pc config.ProviderConfig) (provider.Ada
 		a, err = chat.New(pc)
 	case config.KindOpenAIResponses:
 		a, err = responses.New(pc)
+	case config.KindAnthropicMessages:
+		a, err = anthropicprovider.New(pc)
 	default:
 		return nil, fmt.Errorf("provider %q: unsupported kind %q", name, pc.Kind)
 	}
@@ -181,11 +186,39 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if resp, ok := optim.Try(&req, s.cfg.Server); ok {
+		sw := sse.NewWriter(w)
+		builder := sse.NewBuilder(sw, newMessageID(), req.Model, resp.InputTokens)
+		builder.Start()
+		builder.EmitText(resp.Text)
+		builder.SetOutputTokens(resp.OutputTokens)
+		builder.Finish()
+		return
+	}
+
 	resolved, err := s.router.Resolve(req.Model)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"type":"error","error":{"type":"invalid_request_error","message":%q}}`, err.Error()), http.StatusBadRequest)
 		return
 	}
+
+	if webtools.IsWebServerToolRequest(&req) {
+		if !s.cfg.Server.EnableWebServerTools {
+			http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"tool_choice forces Anthropic web server tool, but local web server tools are disabled (enable_web_server_tools: false)"}}`, http.StatusBadRequest)
+			return
+		}
+		sw := sse.NewWriter(w)
+		builder := sse.NewBuilder(sw, newMessageID(), req.Model, estimateInputTokens(&req))
+		policy := webtools.NewEgressPolicy(s.cfg.Server.WebFetchAllowedSchemes, s.cfg.Server.WebFetchAllowPrivateNetworks)
+		webtools.StreamWebServerToolResponse(r.Context(), &req, builder, policy, webtools.DefaultRunner())
+		return
+	}
+
+	if resolved.Provider.Kind == config.KindOpenAIChat && webtools.HasListedAnthropicWebServerTools(&req) && !s.cfg.Server.EnableWebServerTools {
+		http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"OpenAI Chat upstreams cannot use listed Anthropic web server tools (web_search / web_fetch) without the local web server tool handler"}}`, http.StatusBadRequest)
+		return
+	}
+
 	adapter, err := s.adapterFor(resolved.ProviderName, resolved.Provider)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"type":"error","error":{"type":"invalid_request_error","message":%q}}`, err.Error()), http.StatusInternalServerError)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/relaycode/relaycode/internal/anthropic"
@@ -13,18 +14,38 @@ import (
 	"github.com/relaycode/relaycode/internal/sse"
 )
 
-type Adapter struct{ pc config.ProviderConfig }
+type Adapter struct {
+	pc     config.ProviderConfig
+	client *http.Client
+	sem    chan struct{}
+}
 
 func New(pc config.ProviderConfig) (provider.Adapter, error) {
 	if pc.APIKey == "" {
 		return nil, fmt.Errorf("openai_chat: api_key is empty")
 	}
-	return &Adapter{pc: pc}, nil
+	client, err := provider.HTTPClient(pc)
+	if err != nil {
+		return nil, err
+	}
+	var sem chan struct{}
+	if pc.MaxConcurrency > 0 {
+		sem = make(chan struct{}, pc.MaxConcurrency)
+	}
+	return &Adapter{pc: pc, client: client, sem: sem}, nil
 }
 
 // Stream translates an Anthropic Request to OpenAI /chat/completions and
 // converts the streamed response back into Anthropic SSE events via b.
 func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamModel string, b *sse.Builder) error {
+	if a.sem != nil {
+		select {
+		case a.sem <- struct{}{}:
+			defer func() { <-a.sem }()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	body, err := buildRequest(req, upstreamModel, a.pc.ExperimentalPassthroughServerTools)
 	if err != nil {
 		return err
@@ -33,7 +54,7 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 
 	b.Start()
 
-	reader, closer, err := provider.PostStream(ctx, a.pc.BaseURL, "/chat/completions", a.pc.APIKey, "Authorization", raw)
+	reader, closer, err := provider.PostStreamWithClient(ctx, a.client, a.pc.MaxRetries, a.pc.BaseURL, "/chat/completions", a.pc.APIKey, "Authorization", nil, raw)
 	if err != nil {
 		b.FinishWithError(err.Error())
 		return nil

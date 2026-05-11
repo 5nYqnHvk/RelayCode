@@ -19,9 +19,17 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host      string
-	Port      int
-	AuthToken string
+	Host                         string
+	Port                         int
+	AuthToken                    string
+	EnableWebServerTools         bool
+	WebFetchAllowedSchemes       string
+	WebFetchAllowPrivateNetworks bool
+	FastPrefixDetection          bool
+	EnableNetworkProbeMock       bool
+	EnableTitleGenerationSkip    bool
+	EnableSuggestionModeSkip     bool
+	EnableFilepathExtractionMock bool
 }
 
 type Route struct {
@@ -33,8 +41,9 @@ type Route struct {
 type ProviderKind string
 
 const (
-	KindOpenAIChat      ProviderKind = "openai_chat"
-	KindOpenAIResponses ProviderKind = "openai_responses"
+	KindOpenAIChat        ProviderKind = "openai_chat"
+	KindOpenAIResponses   ProviderKind = "openai_responses"
+	KindAnthropicMessages ProviderKind = "anthropic_messages"
 )
 
 type ProviderConfig struct {
@@ -42,6 +51,11 @@ type ProviderConfig struct {
 	BaseURL                            string
 	APIKey                             string
 	ExperimentalPassthroughServerTools bool
+	CodexAuthPath                      string
+	HTTPTimeoutSeconds                 int
+	HTTPProxy                          string
+	MaxRetries                         int
+	MaxConcurrency                     int
 }
 
 // Load reads the YAML config at path and validates it.
@@ -66,7 +80,16 @@ func Load(path string) (*Config, error) {
 
 func fromDoc(doc yamlMap) (*Config, error) {
 	cfg := &Config{
-		Server:    ServerConfig{Host: "127.0.0.1", Port: 8080},
+		Server: ServerConfig{
+			Host:                         "127.0.0.1",
+			Port:                         8080,
+			WebFetchAllowedSchemes:       "http,https",
+			FastPrefixDetection:          true,
+			EnableNetworkProbeMock:       true,
+			EnableTitleGenerationSkip:    true,
+			EnableSuggestionModeSkip:     true,
+			EnableFilepathExtractionMock: true,
+		},
 		Providers: map[string]ProviderConfig{},
 	}
 
@@ -80,6 +103,16 @@ func fromDoc(doc yamlMap) (*Config, error) {
 		if v, ok := srv["auth_token"].(string); ok {
 			cfg.Server.AuthToken = expandEnv(v)
 		}
+		cfg.Server.EnableWebServerTools = boolAt(srv, "enable_web_server_tools")
+		if v, ok := srv["web_fetch_allowed_schemes"].(string); ok && strings.TrimSpace(v) != "" {
+			cfg.Server.WebFetchAllowedSchemes = v
+		}
+		cfg.Server.WebFetchAllowPrivateNetworks = boolAt(srv, "web_fetch_allow_private_networks")
+		cfg.Server.FastPrefixDetection = boolDefault(srv, "fast_prefix_detection", cfg.Server.FastPrefixDetection)
+		cfg.Server.EnableNetworkProbeMock = boolDefault(srv, "enable_network_probe_mock", cfg.Server.EnableNetworkProbeMock)
+		cfg.Server.EnableTitleGenerationSkip = boolDefault(srv, "enable_title_generation_skip", cfg.Server.EnableTitleGenerationSkip)
+		cfg.Server.EnableSuggestionModeSkip = boolDefault(srv, "enable_suggestion_mode_skip", cfg.Server.EnableSuggestionModeSkip)
+		cfg.Server.EnableFilepathExtractionMock = boolDefault(srv, "enable_filepath_extraction_mock", cfg.Server.EnableFilepathExtractionMock)
 	}
 
 	routes, ok := doc["routes"].(yamlList)
@@ -116,15 +149,21 @@ func fromDoc(doc yamlMap) (*Config, error) {
 			BaseURL:                            strings.TrimRight(expandEnv(stringAt(entry, "base_url")), "/"),
 			APIKey:                             expandEnv(stringAt(entry, "api_key")),
 			ExperimentalPassthroughServerTools: boolAt(entry, "experimental_passthrough_server_tools"),
+			CodexAuthPath:                      expandEnv(stringAt(entry, "codex_auth_path")),
+			HTTPTimeoutSeconds:                 intAt(entry, "http_timeout_seconds"),
+			HTTPProxy:                          expandEnv(stringAt(entry, "http_proxy")),
+			MaxRetries:                         intAt(entry, "max_retries"),
+			MaxConcurrency:                     intAt(entry, "max_concurrency"),
 		}
-		if pc.Kind != KindOpenAIChat && pc.Kind != KindOpenAIResponses {
-			return nil, fmt.Errorf("providers.%s: unknown kind %q (want openai_chat|openai_responses)", name, pc.Kind)
+		if pc.Kind != KindOpenAIChat && pc.Kind != KindOpenAIResponses && pc.Kind != KindAnthropicMessages {
+			return nil, fmt.Errorf("providers.%s: unknown kind %q (want openai_chat|openai_responses|anthropic_messages)", name, pc.Kind)
 		}
 		if pc.BaseURL == "" {
 			return nil, fmt.Errorf("providers.%s: base_url required", name)
 		}
 		cfg.Providers[name] = pc
 	}
+
 	return cfg, nil
 }
 
@@ -156,6 +195,20 @@ func boolAt(m yamlMap, key string) bool {
 		return v
 	}
 	return false
+}
+
+func boolDefault(m yamlMap, key string, fallback bool) bool {
+	if v, ok := m[key].(bool); ok {
+		return v
+	}
+	return fallback
+}
+
+func intAt(m yamlMap, key string) int {
+	if v, ok := m[key].(int); ok {
+		return v
+	}
+	return 0
 }
 
 // expandEnv replaces ${NAME} segments with os.Getenv("NAME"). Missing -> "".

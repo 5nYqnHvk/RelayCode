@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
+	"os"
 	"strings"
 
 	"github.com/relaycode/relaycode/internal/anthropic"
@@ -17,6 +19,8 @@ import (
 
 type Adapter struct {
 	pc           config.ProviderConfig
+	client       *http.Client
+	sem          chan struct{}
 	store        *session.Store
 	providerName string
 }
@@ -25,7 +29,15 @@ func New(pc config.ProviderConfig) (provider.Adapter, error) {
 	if pc.APIKey == "" {
 		return nil, fmt.Errorf("openai_responses: api_key is empty")
 	}
-	return &Adapter{pc: pc}, nil
+	client, err := provider.HTTPClient(pc)
+	if err != nil {
+		return nil, err
+	}
+	var sem chan struct{}
+	if pc.MaxConcurrency > 0 {
+		sem = make(chan struct{}, pc.MaxConcurrency)
+	}
+	return &Adapter{pc: pc, client: client, sem: sem}, nil
 }
 
 // SetSession wires a session store after construction. Adapters without a
@@ -38,6 +50,14 @@ func (a *Adapter) SetSession(store *session.Store, providerName string) {
 // Stream translates an Anthropic Request to POST /v1/responses and converts
 // the streamed response back into Anthropic SSE events via b.
 func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamModel string, b *sse.Builder) error {
+	if a.sem != nil {
+		select {
+		case a.sem <- struct{}{}:
+			defer func() { <-a.sem }()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return a.streamOnce(ctx, req, upstreamModel, b, false)
 }
 
@@ -84,7 +104,13 @@ func (a *Adapter) streamOnce(
 	}
 	raw, _ := json.Marshal(body)
 
-	reader, closer, err := provider.PostStream(ctx, a.pc.BaseURL, "/responses", a.pc.APIKey, "Authorization", raw)
+	extraHeaders, err := codexAuthHeaders(a.pc.CodexAuthPath)
+	if err != nil {
+		b.Start()
+		b.FinishWithError(err.Error())
+		return nil
+	}
+	reader, closer, err := provider.PostStreamWithClient(ctx, a.client, a.pc.MaxRetries, a.pc.BaseURL, "/responses", a.pc.APIKey, "Authorization", extraHeaders, raw)
 	if err != nil {
 		b.Start()
 		b.FinishWithError(err.Error())
@@ -93,7 +119,6 @@ func (a *Adapter) streamOnce(
 	defer closer.Close()
 	b.Start()
 
-	// item kind tracking
 	type itemState struct {
 		kind   string
 		callID string
@@ -173,6 +198,11 @@ func (a *Adapter) streamOnce(
 			b.StopTool(st.callID)
 
 		case "response.output_item.done":
+			if handled, err := emitWebSearchCall(ev.Data, b); err != nil {
+				return nil
+			} else if handled {
+				return nil
+			}
 			var wrap struct {
 				Item struct {
 					ID   string `json:"id"`
@@ -279,6 +309,57 @@ func (a *Adapter) streamOnce(
 	return nil
 }
 
+func codexAuthHeaders(path string) (map[string]string, error) {
+	if path == "" {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read codex auth: %w", err)
+	}
+	var auth struct {
+		Tokens struct {
+			AccessToken string `json:"access_token"`
+			AccountID   string `json:"account_id"`
+		} `json:"tokens"`
+	}
+	if err := json.Unmarshal(raw, &auth); err != nil {
+		return nil, fmt.Errorf("parse codex auth: %w", err)
+	}
+	if auth.Tokens.AccessToken == "" {
+		return nil, fmt.Errorf("codex auth %s missing tokens.access_token", path)
+	}
+	headers := map[string]string{"Authorization": "Bearer " + auth.Tokens.AccessToken}
+	if auth.Tokens.AccountID != "" {
+		headers["ChatGPT-Account-ID"] = auth.Tokens.AccountID
+	}
+	return headers, nil
+}
+
+func emitWebSearchCall(data string, b *sse.Builder) (bool, error) {
+	var wrap struct {
+		Item struct {
+			ID     string `json:"id"`
+			Type   string `json:"type"`
+			Action struct {
+				Query string `json:"query"`
+			} `json:"action"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal([]byte(data), &wrap); err != nil {
+		return false, err
+	}
+	if wrap.Item.Type != "web_search_call" || wrap.Item.ID == "" {
+		return false, nil
+	}
+	query := wrap.Item.Action.Query
+	b.StartServerTool(wrap.Item.ID, "web_search")
+	b.EmitToolInput(wrap.Item.ID, fmt.Sprintf(`{"query":%q}`, query))
+	b.StopTool(wrap.Item.ID)
+	b.EmitWebSearchResult(wrap.Item.ID, []map[string]string{})
+	return true, nil
+}
+
 // ---- Request translation ----
 
 // Responses API input items (subset we emit).
@@ -298,10 +379,11 @@ type inputContentPart struct {
 }
 
 type toolDecl struct {
-	Type        string          `json:"type"`
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Type              string          `json:"type"`
+	Name              string          `json:"name,omitempty"`
+	Description       string          `json:"description,omitempty"`
+	Parameters        json.RawMessage `json:"parameters,omitempty"`
+	ExternalWebAccess *bool           `json:"external_web_access,omitempty"`
 }
 
 func buildRequest(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, error) {
@@ -335,7 +417,7 @@ func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughSer
 	}
 	// Match openai/codex HTTP request shape: tool_choice and parallel_tool_calls
 	// are always present; store defaults to false on openai.com.
-	body["tool_choice"] = "auto"
+	body["tool_choice"] = responsesToolChoice(r.ToolChoice)
 	body["parallel_tool_calls"] = true
 	if _, set := body["store"]; !set {
 		body["store"] = false
@@ -345,16 +427,44 @@ func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughSer
 		if len(upstreamTools) > 0 {
 			tools := make([]toolDecl, 0, len(upstreamTools))
 			for _, t := range upstreamTools {
-				tools = append(tools, toolDecl{
-					Type:        "function",
-					Name:        t.Name,
-					Description: t.Description,
-					Parameters:  t.InputSchema,
-				})
+				tools = append(tools, toResponsesToolDecl(t))
 			}
 			body["tools"] = tools
 		}
 	}
+}
+
+func toResponsesToolDecl(t anthropic.Tool) toolDecl {
+	return toolDecl{
+		Type:        "function",
+		Name:        t.Name,
+		Description: t.Description,
+		Parameters:  t.InputSchema,
+	}
+}
+
+func responsesToolChoice(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return "auto"
+	}
+	var choice struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &choice); err != nil {
+		return "auto"
+	}
+	switch choice.Type {
+	case "auto", "any":
+		return "auto"
+	case "none":
+		return "none"
+	case "tool":
+		if choice.Name != "" {
+			return map[string]any{"type": "function", "name": choice.Name}
+		}
+	}
+	return "auto"
 }
 
 func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools bool) ([]inputItem, error) {
@@ -369,6 +479,9 @@ func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools boo
 				case "text":
 					msg.Content = append(msg.Content, inputContentPart{Type: "input_text", Text: b.Text})
 				case "tool_result", "web_search_tool_result", "web_fetch_tool_result", "code_execution_tool_result", "computer_use_tool_result", "mcp_tool_result":
+					if b.Type == "web_search_tool_result" {
+						continue
+					}
 					if b.ToolUseID == "" {
 						continue
 					}
@@ -402,6 +515,9 @@ func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools boo
 				case "thinking", "redacted_thinking":
 					// drop replay: Responses API does not accept raw thinking blocks
 				case "tool_use", "server_tool_use", "mcp_tool_use":
+					if b.Type == "server_tool_use" && b.Name == "web_search" {
+						continue
+					}
 					if b.ID == "" || b.Name == "" {
 						continue
 					}
