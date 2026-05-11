@@ -541,12 +541,18 @@ func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools boo
 				out = append(out, msg)
 			}
 		case "assistant":
-			var textParts []string
+			var preText []string
+			var postText []string
 			var pendingCalls []inputItem
+			seenTool := false
 			for _, b := range blocks {
 				switch b.Type {
 				case "text":
-					textParts = append(textParts, b.Text)
+					if seenTool {
+						postText = append(postText, b.Text)
+					} else {
+						preText = append(preText, b.Text)
+					}
 				case "thinking", "redacted_thinking":
 					// drop replay: Responses API does not accept raw thinking blocks
 				case "tool_use", "server_tool_use", "mcp_tool_use":
@@ -556,6 +562,7 @@ func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools boo
 					if b.ID == "" || b.Name == "" {
 						continue
 					}
+					seenTool = true
 					args := "{}"
 					if len(b.Input) > 0 {
 						args = string(b.Input)
@@ -568,7 +575,7 @@ func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools boo
 					})
 				}
 			}
-			if text := strings.TrimSpace(strings.Join(textParts, "\n\n")); text != "" {
+			if text := strings.TrimSpace(strings.Join(preText, "\n\n")); text != "" {
 				out = append(out, inputItem{
 					Type: "message",
 					Role: "assistant",
@@ -578,6 +585,15 @@ func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools boo
 				})
 			}
 			out = append(out, pendingCalls...)
+			if text := strings.TrimSpace(strings.Join(postText, "\n\n")); text != "" {
+				out = append(out, inputItem{
+					Type: "message",
+					Role: "assistant",
+					Content: []inputContentPart{
+						{Type: "output_text", Text: text},
+					},
+				})
+			}
 		default:
 			return nil, fmt.Errorf("unsupported role %q", m.Role)
 		}

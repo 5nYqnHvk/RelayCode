@@ -349,18 +349,25 @@ func convertUserBlocks(blocks []anthropic.Block) ([]openaiMessage, error) {
 }
 
 func convertAssistantBlocks(blocks []anthropic.Block) ([]openaiMessage, error) {
-	var textParts []string
+	var preText []string
+	var postText []string
 	var toolCalls []openaiToolRef
+	seenTool := false
 	for _, b := range blocks {
 		switch b.Type {
 		case "text":
-			textParts = append(textParts, b.Text)
+			if seenTool {
+				postText = append(postText, b.Text)
+			} else {
+				preText = append(preText, b.Text)
+			}
 		case "thinking", "redacted_thinking":
 			// drop: OpenAI chat does not accept Anthropic thinking blocks
 		case "tool_use", "server_tool_use", "mcp_tool_use":
 			if b.ID == "" || b.Name == "" {
 				continue
 			}
+			seenTool = true
 			args := "{}"
 			if len(b.Input) > 0 {
 				args = string(b.Input)
@@ -377,11 +384,15 @@ func convertAssistantBlocks(blocks []anthropic.Block) ([]openaiMessage, error) {
 	}
 	msg := openaiMessage{
 		Role:      "assistant",
-		Content:   strings.Join(textParts, "\n\n"),
+		Content:   strings.Join(preText, "\n\n"),
 		ToolCalls: toolCalls,
 	}
 	if msg.Content == "" && len(toolCalls) == 0 {
 		msg.Content = " "
 	}
-	return []openaiMessage{msg}, nil
+	out := []openaiMessage{msg}
+	if text := strings.Join(postText, "\n\n"); strings.TrimSpace(text) != "" {
+		out = append(out, openaiMessage{Role: "assistant", Content: text})
+	}
+	return out, nil
 }
