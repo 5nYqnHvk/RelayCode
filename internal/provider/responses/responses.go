@@ -503,9 +503,6 @@ func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughSer
 	if r.MaxTokens > 0 {
 		body["max_output_tokens"] = r.MaxTokens
 	}
-	if r.Temperature != nil {
-		body["temperature"] = *r.Temperature
-	}
 	if r.TopP != nil {
 		body["top_p"] = *r.TopP
 	}

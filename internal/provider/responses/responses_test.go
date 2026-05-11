@@ -68,6 +68,19 @@ func TestBuildRequestMapsOutputConfigEffort(t *testing.T) {
 	}
 }
 
+func TestBuildRequestOmitsTemperature(t *testing.T) {
+	temp := 1.0
+	req := &anthropic.Request{Temperature: &temp}
+
+	body, err := buildRequest(req, "gpt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["temperature"]; ok {
+		t.Fatalf("temperature should be omitted for responses payload: %+v", body)
+	}
+}
+
 func TestBuildRequestAliasesTypeArgument(t *testing.T) {
 	req := &anthropic.Request{Tools: []anthropic.Tool{{
 		Name:        "NotionLike",
