@@ -5,6 +5,7 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Request is the incoming /v1/messages body.
@@ -94,6 +95,10 @@ type Tool struct {
 }
 
 // SystemText collapses the Anthropic-style system field into a single string.
+// Volatile Claude-Code-only header blocks (e.g. the per-turn
+// x-anthropic-billing-header line with a rotating session hash) are stripped
+// so the instructions prefix stays stable across turns of the same
+// conversation and upstream prompt caches can hit.
 func SystemText(raw json.RawMessage) (string, error) {
 	if len(raw) == 0 {
 		return "", nil
@@ -110,16 +115,37 @@ func SystemText(raw json.RawMessage) (string, error) {
 		return "", fmt.Errorf("system: %w", err)
 	}
 	var out string
-	for i, b := range blocks {
+	first := true
+	for _, b := range blocks {
 		if b.Type != "text" {
 			continue
 		}
-		if i > 0 {
+		if isVolatileSystemBlock(b.Text) {
+			continue
+		}
+		if !first {
 			out += "\n\n"
 		}
 		out += b.Text
+		first = false
 	}
 	return out, nil
+}
+
+// isVolatileSystemBlock returns true for ingress header lines that change
+// every turn and therefore poison the upstream prompt cache. Currently
+// detects Claude Code's `x-anthropic-billing-header: ...` preamble which
+// carries a rotating session-hash field (`cch=...`).
+func isVolatileSystemBlock(text string) bool {
+	trimmed := text
+	if len(trimmed) > 256 {
+		trimmed = trimmed[:256]
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "x-anthropic-billing-header:") {
+		return true
+	}
+	return false
 }
 
 // SessionID returns a stable conversation identifier extracted from the
