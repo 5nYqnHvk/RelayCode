@@ -22,7 +22,53 @@ type Request struct {
 	StopSequences []string        `json:"stop_sequences,omitempty"`
 	Stream        bool            `json:"stream,omitempty"`
 	Thinking      json.RawMessage `json:"thinking,omitempty"`
+	OutputConfig  *OutputConfig   `json:"output_config,omitempty"`
 	Metadata      json.RawMessage `json:"metadata,omitempty"`
+}
+
+// OutputConfig carries Anthropic output configuration fields.
+type OutputConfig struct {
+	Effort any `json:"effort,omitempty"`
+}
+
+func (r *Request) ReasoningEffort() (string, bool) {
+	if r == nil || r.OutputConfig == nil || r.OutputConfig.Effort == nil {
+		return "", false
+	}
+	switch v := r.OutputConfig.Effort.(type) {
+	case string:
+		switch strings.ToLower(v) {
+		case "low", "medium", "high":
+			return strings.ToLower(v), true
+		case "max", "xhigh":
+			return "xhigh", true
+		case "none", "minimal":
+			return strings.ToLower(v), true
+		}
+	case float64:
+		if v <= 50 {
+			return "low", true
+		}
+		if v <= 85 {
+			return "medium", true
+		}
+		if v <= 100 {
+			return "high", true
+		}
+		return "xhigh", true
+	case int:
+		if v <= 50 {
+			return "low", true
+		}
+		if v <= 85 {
+			return "medium", true
+		}
+		if v <= 100 {
+			return "high", true
+		}
+		return "xhigh", true
+	}
+	return "", false
 }
 
 // Message is one turn in the conversation.

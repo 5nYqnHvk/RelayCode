@@ -277,6 +277,9 @@ func buildRequestWithAliases(r *anthropic.Request, model string, passthroughServ
 	if len(r.StopSequences) > 0 {
 		body["stop"] = r.StopSequences
 	}
+	if effort, ok := r.ReasoningEffort(); ok {
+		body["reasoning_effort"] = effort
+	}
 	aliases := map[string]map[string]string{}
 	if len(r.Tools) > 0 {
 		upstreamTools := anthropic.ToolsForUpstream(r.Tools, passthroughServerTools)

@@ -450,6 +450,9 @@ func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughSer
 	if r.TopP != nil {
 		body["top_p"] = *r.TopP
 	}
+	if effort, ok := r.ReasoningEffort(); ok {
+		body["reasoning"] = map[string]any{"effort": effort}
+	}
 	// Match openai/codex HTTP request shape: tool_choice and parallel_tool_calls
 	// are always present; store defaults to false on openai.com.
 	body["tool_choice"] = responsesToolChoice(r.ToolChoice)

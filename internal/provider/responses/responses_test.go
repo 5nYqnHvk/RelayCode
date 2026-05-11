@@ -35,6 +35,19 @@ func TestBuildRequestFiltersServerToolsByDefault(t *testing.T) {
 	}
 }
 
+func TestBuildRequestMapsOutputConfigEffort(t *testing.T) {
+	req := &anthropic.Request{OutputConfig: &anthropic.OutputConfig{Effort: "max"}}
+
+	body, err := buildRequest(req, "gpt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reasoning := body["reasoning"].(map[string]any)
+	if reasoning["effort"] != "xhigh" {
+		t.Fatalf("reasoning.effort = %v", reasoning["effort"])
+	}
+}
+
 func TestBuildRequestPassesServerToolsAsFunctionsWhenExperimental(t *testing.T) {
 	req := &anthropic.Request{
 		Tools: []anthropic.Tool{
