@@ -269,10 +269,37 @@ curl -sS http://127.0.0.1:8080/debug/stats \
 Set `RELAYCODE_DEBUG_REQUEST=1` to dump raw `/v1/messages` bodies to stderr
 when diagnosing upstream issues. Off by default so prompts never leak.
 
+## Tool compatibility
+
+RelayCode proxies a non-Anthropic backend, so Anthropic-hosted tools do
+not work through it. The table below lists **only constraints the proxy
+itself imposes** — things unrelated to the proxy (client auth, sandboxing,
+dev-harness integration) are out of scope here.
+
+| Claude Code tool | Through RelayCode | Notes |
+|---|---|---|
+| `Bash`, `Read`, `Write`, `Edit` | Works | Client-executed. Proxy just relays the `tool_use` / `tool_result` cycle. |
+| `NotebookEdit` | Works | Same as above. |
+| Custom function tools declared by the client | Works | Translated to OpenAI `function` tools with the same schema. |
+| Thinking / reasoning blocks | Works | Mapped to `thinking_delta` and `reasoning_content` / `reasoning_text` upstream events. |
+| `WebSearch` (Anthropic server tool `web_search_*`) | **Not supported** | Anthropic executes this server-side. OpenAI backends have no equivalent, so the proxy strips server-tool declarations before forwarding. Disable WebSearch in your Claude Code config or route that model to a real Anthropic backend. |
+| `WebFetch` (server tool `web_fetch_*`) | **Not supported** | Same reason as WebSearch. |
+| `computer_use` / `code_execution` server tools | **Not supported** | Provider-side only; stripped before upstream call. |
+| Image content blocks (`image` in user/assistant messages) | **Not supported** | Adapter returns `invalid_request` for user-side image blocks. |
+| MCP tool blocks (`mcp_tool_use`) | **Not supported** | Stripped from replayed history so upstream sees a clean function-call transcript. |
+
+Everything else the model decides to invoke as a regular function-style
+tool will pass through correctly with arguments streamed as
+`input_json_delta`.
+
 ## Limitations
 
-- No image-content support in either adapter (returns `invalid_request` on
+- No image content support in either adapter (returns `invalid_request` on
   image blocks).
+- No Anthropic server tools — `web_search`, `web_fetch`,
+  `code_execution`, `computer_use`, `mcp_*` are stripped before the
+  upstream call since non-Anthropic backends cannot execute them. See
+  the **Tool compatibility** table above.
 - No WebSocket Responses transport (the path codex uses for
   `previous_response_id`). HTTP-only for now; cache chaining relies on
   upstream prompt caching, which has proven sufficient in practice.
