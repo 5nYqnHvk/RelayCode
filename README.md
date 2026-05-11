@@ -5,11 +5,11 @@
 </p>
 
 <p align="center">
+  <a href="#why-this-exists">Why this exists</a> ·
   <a href="#quickstart">Quickstart</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#providers">Providers</a> ·
-  <a href="#tool-compatibility">Tool compatibility</a> ·
   <a href="#development">Development</a>
 </p>
 
@@ -28,6 +28,47 @@ Supported upstream protocols:
 Common use: keep Claude Code UX while routing Opus/Sonnet/Haiku requests to
 OpenAI-compatible backends, DeepSeek-style chat endpoints, or Anthropic native
 routes.
+
+## Why this exists
+
+Claude Code normally sends conversation history every request. Long agentic
+sessions get expensive fast: each tool cycle adds more transcript, and later
+requests can replay tens of thousands of input tokens.
+
+RelayCode was built to test a different shape: keep Claude Code as the local
+agent UI, but route model calls through a Responses-style backend with upstream
+prompt caching. In one end-to-end development run, RelayCode was built from
+scratch to working state in about **8 hours**, using about **$150** of model spend
+while running Claude Code through RelayCode with a **GPT-5.5** route.
+
+Observed token/cost behavior from that run:
+
+| Scenario | Observed result |
+|---|---|
+| First request in a session | ~20k-30k input tokens |
+| Later cached requests | usually ~1k-2k input tokens |
+| Claude Code tool-compatibility test | ~40 requests for about $2-$3 |
+| Metrics tracked | request count, cost, input/output tokens, cache read/write |
+
+Real RelayCode log from one session (abbreviated, showing `cache_miss` on the
+first turn and `cache_hit` on every turn after — `cached_tokens` grows with the
+shared prefix while only the delta is billed as new input):
+
+```text
+responses: cache_miss provider=custom_provider_responses model=gpt-5.5 input_tokens=24871 output_tokens=147
+responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=24576 input_tokens=24994 output_tokens=43
+responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=24576 input_tokens=25059 output_tokens=24
+responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=26624 input_tokens=26946 output_tokens=69
+responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=53760 input_tokens=53913 output_tokens=50
+responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=67584 input_tokens=68153 output_tokens=452
+responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=69120 input_tokens=69514 output_tokens=48
+```
+
+Those numbers are workload/provider dependent, but the pattern is the point:
+once the stable prefix lands in upstream cache, later Claude Code turns stop
+paying full-history cost every request.
+
+![Token and cost usage per request, captured during the build run](Img/Token.png)
 
 ## Highlights
 

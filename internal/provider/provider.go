@@ -4,10 +4,10 @@ package provider
 import (
 	"context"
 
-	"github.com/relaycode/relaycode/internal/anthropic"
-	"github.com/relaycode/relaycode/internal/config"
-	"github.com/relaycode/relaycode/internal/session"
-	"github.com/relaycode/relaycode/internal/sse"
+	"github.com/5nYqnHvk/RelayCode/internal/anthropic"
+	"github.com/5nYqnHvk/RelayCode/internal/config"
+	"github.com/5nYqnHvk/RelayCode/internal/session"
+	"github.com/5nYqnHvk/RelayCode/internal/sse"
 )
 
 // Adapter streams a translated Anthropic response to the given SSE Builder.

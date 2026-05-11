@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/relaycode/relaycode/internal/anthropic"
-	"github.com/relaycode/relaycode/internal/config"
-	"github.com/relaycode/relaycode/internal/provider"
-	"github.com/relaycode/relaycode/internal/sse"
-	"github.com/relaycode/relaycode/internal/streamparse"
+	"github.com/5nYqnHvk/RelayCode/internal/anthropic"
+	"github.com/5nYqnHvk/RelayCode/internal/config"
+	"github.com/5nYqnHvk/RelayCode/internal/provider"
+	"github.com/5nYqnHvk/RelayCode/internal/sse"
+	"github.com/5nYqnHvk/RelayCode/internal/streamparse"
 )
 
 type Adapter struct {

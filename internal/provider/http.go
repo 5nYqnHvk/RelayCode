@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/relaycode/relaycode/internal/config"
+	"github.com/5nYqnHvk/RelayCode/internal/config"
 )
 
 // PostStream issues a POST with the given JSON body, returns an SSE line reader.

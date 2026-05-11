@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/relaycode/relaycode/internal/anthropic"
-	"github.com/relaycode/relaycode/internal/config"
+	"github.com/5nYqnHvk/RelayCode/internal/anthropic"
+	"github.com/5nYqnHvk/RelayCode/internal/config"
 )
 
 func TestTryQuotaMock(t *testing.T) {

@@ -3,7 +3,7 @@ package router
 import (
 	"testing"
 
-	"github.com/relaycode/relaycode/internal/config"
+	"github.com/5nYqnHvk/RelayCode/internal/config"
 )
 
 func TestResolveFirstCaseInsensitiveSubstringMatch(t *testing.T) {

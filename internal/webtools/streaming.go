@@ -8,8 +8,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/relaycode/relaycode/internal/anthropic"
-	"github.com/relaycode/relaycode/internal/sse"
+	"github.com/5nYqnHvk/RelayCode/internal/anthropic"
+	"github.com/5nYqnHvk/RelayCode/internal/sse"
 )
 
 type SearchRunner func(context.Context, string) ([]SearchResult, error)

@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/relaycode/relaycode/internal/anthropic"
+	"github.com/5nYqnHvk/RelayCode/internal/anthropic"
 )
 
 type SearchResult struct {
