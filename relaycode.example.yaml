@@ -14,6 +14,7 @@ server:
   enable_title_generation_skip: true
   enable_suggestion_mode_skip: true
   enable_filepath_extraction_mock: true
+  log_request_snapshots: false   # safe shape-only request logs; no raw prompt text
 
 # Incoming Claude model name -> backend route.
 # "match" is checked as a case-insensitive substring of the incoming model

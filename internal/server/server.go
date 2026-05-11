@@ -181,6 +181,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if os.Getenv("RELAYCODE_DEBUG_REQUEST") == "1" {
 		log.Printf("incoming raw body (%d bytes): %s", len(rawBody), string(rawBody))
 	}
+	if s.cfg.Server.LogRequestSnapshots || os.Getenv("RELAYCODE_LOG_REQUEST_SNAPSHOTS") == "1" {
+		log.Printf("incoming request snapshot: %s", anthropic.SnapshotJSON(&req))
+	}
 	if req.Model == "" {
 		http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"model is required"}}`, http.StatusBadRequest)
 		return

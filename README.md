@@ -176,6 +176,7 @@ server:
   enable_title_generation_skip: true
   enable_suggestion_mode_skip: true
   enable_filepath_extraction_mock: true
+  log_request_snapshots: false   # safe shape-only request logs; no raw prompt text
 
 providers:
   openai_responses:
@@ -226,7 +227,8 @@ providers:
   `max_retries` (transport / 429 / 5xx), and `max_concurrency`.
 - Claude Code fast paths are enabled by default: quota probe mock, command prefix
   detection, title generation skip, suggestion mode skip, and filepath extraction
-  mock.
+  mock. `log_request_snapshots` logs safe request shapes for debugging without raw
+  prompt text.
 
 ## Routing
 
