@@ -41,13 +41,50 @@ func (r *Registry) Validate(toolName, args string) (string, bool) {
 	if err := json.Unmarshal([]byte(restored), &value); err != nil {
 		return "", false
 	}
-	if _, ok := value.(map[string]any); !ok {
+	obj, ok := value.(map[string]any)
+	if !ok {
 		return "", false
 	}
-	if len(tool.InputSchema) > 0 && !validAgainstSchema(value, tool.InputSchema) {
+	if len(tool.InputSchema) > 0 {
+		stripEmptyOptionalArgs(obj, tool.InputSchema)
+	}
+	if len(tool.InputSchema) > 0 && !validAgainstSchema(obj, tool.InputSchema) {
 		return "", false
 	}
-	return restored, true
+	cleaned, err := json.Marshal(obj)
+	if err != nil {
+		return restored, true
+	}
+	return string(cleaned), true
+}
+
+// Drop empty optional placeholders emitted by upstream models.
+func stripEmptyOptionalArgs(obj map[string]any, rawSchema json.RawMessage) {
+	var schema map[string]any
+	if err := json.Unmarshal(rawSchema, &schema); err != nil {
+		return
+	}
+	required := map[string]struct{}{}
+	if reqList, ok := schema["required"].([]any); ok {
+		for _, item := range reqList {
+			if s, ok := item.(string); ok {
+				required[s] = struct{}{}
+			}
+		}
+	}
+	for name, value := range obj {
+		if _, isRequired := required[name]; isRequired {
+			continue
+		}
+		switch v := value.(type) {
+		case string:
+			if v == "" {
+				delete(obj, name)
+			}
+		case nil:
+			delete(obj, name)
+		}
+	}
 }
 
 func validAgainstSchema(value any, raw json.RawMessage) bool {
@@ -77,7 +114,7 @@ func schemaSupported(schema map[string]any) bool {
 		switch key {
 		case "type", "enum", "const", "anyOf", "oneOf", "allOf", "not",
 			"properties", "required", "items", "additionalProperties",
-			"minLength", "maxLength", "pattern", "minimum", "maximum",
+			"minLength", "maxLength", "pattern", "format", "minimum", "maximum",
 			"exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minItems",
 			"maxItems", "minProperties", "maxProperties",
 			"description", "title", "default", "examples", "$schema", "$id",
