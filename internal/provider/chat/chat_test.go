@@ -31,6 +31,43 @@ func TestBuildRequestFiltersServerToolsByDefault(t *testing.T) {
 	}
 }
 
+func TestBuildRequestMapsToolChoiceParallelStrictAndOutputFormat(t *testing.T) {
+	strict := true
+	req := &anthropic.Request{
+		Tools: []anthropic.Tool{{
+			Name:        "Read",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+			Strict:      &strict,
+		}},
+		ToolChoice: json.RawMessage(`{"type":"tool","name":"Read"}`),
+		OutputConfig: &anthropic.OutputConfig{ExtraFields: map[string]json.RawMessage{
+			"format": json.RawMessage(`{"type":"json_schema","schema":{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}}`),
+		}},
+	}
+
+	body, err := buildRequest(req, "gpt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	choice := body["tool_choice"].(map[string]any)
+	fn := choice["function"].(map[string]any)
+	if choice["type"] != "function" || fn["name"] != "Read" {
+		t.Fatalf("tool_choice = %+v", choice)
+	}
+	if body["parallel_tool_calls"] != false {
+		t.Fatalf("parallel_tool_calls = %v", body["parallel_tool_calls"])
+	}
+	tools := body["tools"].([]openaiTool)
+	if tools[0].Function.Strict == nil || !*tools[0].Function.Strict {
+		t.Fatalf("strict not mapped: %+v", tools[0])
+	}
+	format := body["response_format"].(map[string]any)
+	jsonSchema := format["json_schema"].(map[string]any)
+	if format["type"] != "json_schema" || jsonSchema["name"] != "relaycode_output_schema" || jsonSchema["strict"] != true {
+		t.Fatalf("response_format = %+v", format)
+	}
+}
+
 func TestBuildRequestMapsOutputConfigEffort(t *testing.T) {
 	req := &anthropic.Request{OutputConfig: &anthropic.OutputConfig{Effort: "max"}}
 

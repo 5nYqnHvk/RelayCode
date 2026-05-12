@@ -249,6 +249,7 @@ type openaiToolDecl struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Strict      *bool           `json:"strict,omitempty"`
 }
 
 func buildRequest(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, error) {
@@ -281,6 +282,11 @@ func buildRequestWithAliases(r *anthropic.Request, model string, passthroughServ
 	if effort, ok := r.ReasoningEffort(); ok {
 		body["reasoning_effort"] = effort
 	}
+	body["tool_choice"] = chatToolChoice(r.ToolChoice)
+	body["parallel_tool_calls"] = false
+	if responseFormat := chatResponseFormat(r); responseFormat != nil {
+		body["response_format"] = responseFormat
+	}
 	aliases := map[string]map[string]string{}
 	if len(r.Tools) > 0 {
 		upstreamTools := anthropic.ToolsForUpstream(r.Tools, passthroughServerTools)
@@ -297,6 +303,7 @@ func buildRequestWithAliases(r *anthropic.Request, model string, passthroughServ
 						Name:        t.Name,
 						Description: t.Description,
 						Parameters:  params,
+						Strict:      t.Strict,
 					},
 				})
 			}
@@ -306,8 +313,76 @@ func buildRequestWithAliases(r *anthropic.Request, model string, passthroughServ
 	return body, aliases, nil
 }
 
+func chatToolChoice(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return "auto"
+	}
+	var choice struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &choice); err != nil {
+		return "auto"
+	}
+	switch choice.Type {
+	case "auto":
+		return "auto"
+	case "any":
+		return "required"
+	case "none":
+		return "none"
+	case "tool":
+		if choice.Name != "" {
+			return map[string]any{"type": "function", "function": map[string]any{"name": choice.Name}}
+		}
+	}
+	return "auto"
+}
+
+func chatResponseFormat(r *anthropic.Request) any {
+	if r == nil || r.OutputConfig == nil {
+		return nil
+	}
+	format := r.OutputConfig.RawField("format")
+	if len(format) == 0 {
+		return nil
+	}
+	var f map[string]any
+	if err := json.Unmarshal(format, &f); err != nil {
+		return nil
+	}
+	typ, _ := f["type"].(string)
+	if typ == "" {
+		return nil
+	}
+	if typ != "json_schema" {
+		return map[string]any{"type": typ}
+	}
+	schema, ok := f["schema"]
+	if !ok {
+		return nil
+	}
+	name, _ := f["name"].(string)
+	if name == "" {
+		name = "relaycode_output_schema"
+	}
+	strict, ok := f["strict"].(bool)
+	if !ok {
+		strict = true
+	}
+	return map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name":   name,
+			"schema": schema,
+			"strict": strict,
+		},
+	}
+}
+
 func convertMessages(r *anthropic.Request, passthroughServerTools bool) ([]openaiMessage, error) {
 	var out []openaiMessage
+	normalized := anthropic.NormalizeMessagesForUpstream(r.Messages, passthroughServerTools, r.HasToolSearchBeta())
 
 	if sysText, err := anthropic.SystemText(r.System); err != nil {
 		return nil, err
@@ -315,7 +390,7 @@ func convertMessages(r *anthropic.Request, passthroughServerTools bool) ([]opena
 		out = append(out, openaiMessage{Role: "system", Content: sysText})
 	}
 
-	for _, m := range r.Messages {
+	for _, m := range normalized {
 		blocks := anthropic.BlocksForUpstream(m.Content.AsBlocks(), passthroughServerTools)
 		switch m.Role {
 		case "user":
