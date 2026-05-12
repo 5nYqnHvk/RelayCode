@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/5nYqnHvk/RelayCode/internal/anthropic"
@@ -33,6 +34,7 @@ type Server struct {
 	cfg      *config.Config
 	router   *router.Router
 	adapters map[string]provider.Adapter // lazy, keyed by provider name in cfg
+	mu       sync.Mutex
 	sessions *session.Store
 	addr     string
 }
@@ -53,6 +55,9 @@ func New(cfg *config.Config) (*Server, error) {
 }
 
 func (s *Server) adapterFor(name string, pc config.ProviderConfig) (provider.Adapter, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if a, ok := s.adapters[name]; ok {
 		return a, nil
 	}
