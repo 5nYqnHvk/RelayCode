@@ -14,6 +14,7 @@ import (
 	"github.com/5nYqnHvk/RelayCode/internal/config"
 	"github.com/5nYqnHvk/RelayCode/internal/provider"
 	"github.com/5nYqnHvk/RelayCode/internal/provider/toolargs"
+	"github.com/5nYqnHvk/RelayCode/internal/provider/toolguard"
 	"github.com/5nYqnHvk/RelayCode/internal/session"
 	"github.com/5nYqnHvk/RelayCode/internal/sse"
 	"github.com/5nYqnHvk/RelayCode/internal/streamparse"
@@ -136,33 +137,36 @@ func (a *Adapter) streamOnce(
 		toolClosed bool
 	}
 	items := map[string]*itemState{}
-	aliasBuffers := map[int]string{}
 	emittedToolCall := false
+	registry := toolguard.NewRegistry(req.Tools, a.pc.ExperimentalPassthroughServerTools, aliases)
 
 	stripper := tagStripper{}
 	thinkParser := streamparse.ThinkTagParser{}
-	toolParser := streamparse.HeuristicToolParser{}
-	emitToolCalls := func(calls []streamparse.ToolCall) {
-		for _, call := range calls {
-			if call.ID == "" || call.Name == "" {
-				continue
-			}
-			raw, _ := json.Marshal(call.Input)
-			b.StartTool(call.ID, call.Name)
-			b.EmitToolInput(call.ID, string(raw))
-			b.StopTool(call.ID)
-		}
-	}
 	emitParsedText := func(text string) {
 		for _, chunk := range thinkParser.Feed(text) {
 			if chunk.Kind == streamparse.ThinkingChunk {
 				b.EmitThinking(chunk.Content)
 			} else {
-				safe, calls := toolParser.Feed(chunk.Content)
-				b.EmitText(safe)
-				emitToolCalls(calls)
+				b.EmitText(chunk.Content)
 			}
 		}
+	}
+	emitFunctionCall := func(st *itemState, args string) {
+		if st == nil || st.toolClosed || st.kind != "function_call" || st.callID == "" || st.name == "" {
+			return
+		}
+		if args == "" {
+			args = st.args
+		}
+		restored, ok := registry.Validate(st.name, args)
+		if !ok {
+			return
+		}
+		b.StartTool(st.callID, st.name)
+		b.EmitToolInput(st.callID, restored)
+		b.StopTool(st.callID)
+		st.toolClosed = true
+		emittedToolCall = true
 	}
 	stopReason := "end_turn"
 	outputTokens := 0
@@ -198,12 +202,7 @@ func (a *Adapter) streamOnce(
 			if err := json.Unmarshal([]byte(ev.Data), &wrap); err != nil {
 				return nil
 			}
-			st := &itemState{index: len(items), kind: wrap.Item.Type, callID: wrap.Item.CallID, name: wrap.Item.Name}
-			items[wrap.Item.ID] = st
-			if st.kind == "function_call" && st.callID != "" && st.name != "" {
-				b.StartTool(st.callID, st.name)
-				emittedToolCall = true
-			}
+			items[wrap.Item.ID] = &itemState{index: len(items), kind: wrap.Item.Type, callID: wrap.Item.CallID, name: wrap.Item.Name}
 
 		case "response.output_text.delta":
 			if header.Delta == "" {
@@ -227,23 +226,25 @@ func (a *Adapter) streamOnce(
 				return nil
 			}
 			st.args += header.Delta
-			if restored, ok := toolargs.RestoreArgs(st.index, st.name, header.Delta, aliases, aliasBuffers); ok {
-				b.EmitToolInput(st.callID, restored)
-			}
 
 		case "response.function_call_arguments.done":
+			var wrap struct {
+				Arguments string `json:"arguments,omitempty"`
+			}
+			if err := json.Unmarshal([]byte(ev.Data), &wrap); err != nil {
+				return nil
+			}
 			st := items[header.ItemID]
 			if st == nil || st.callID == "" {
 				return nil
 			}
-			if buffered := aliasBuffers[st.index]; buffered != "" {
-				if restored, ok := toolargs.RestoreArgs(st.index, st.name, "", aliases, aliasBuffers); ok {
-					b.EmitToolInput(st.callID, restored)
-				}
+			if wrap.Arguments != "" {
+				st.args = wrap.Arguments
 			}
-			b.StopTool(st.callID)
-			st.toolClosed = true
-			emittedToolCall = true
+			if st.args == "" {
+				st.args = "{}"
+			}
+			emitFunctionCall(st, st.args)
 
 		case "response.output_item.done":
 			if handled, err := emitWebSearchCall(ev.Data, b); err != nil {
@@ -278,16 +279,10 @@ func (a *Adapter) streamOnce(
 				st.name = wrap.Item.Name
 			}
 			if st.kind == "function_call" && st.callID != "" && st.name != "" {
-				if !st.toolClosed {
-					b.StartTool(st.callID, st.name)
-					if st.args == "" && wrap.Item.Arguments != "" {
-						b.EmitToolInput(st.callID, toolargs.RestoreCompleteArgs(st.name, wrap.Item.Arguments, aliases))
-						st.args = wrap.Item.Arguments
-					}
-					b.StopTool(st.callID)
-					st.toolClosed = true
+				if wrap.Item.Arguments != "" {
+					st.args = wrap.Item.Arguments
 				}
-				emittedToolCall = true
+				emitFunctionCall(st, st.args)
 			}
 
 		case "response.completed":
@@ -301,9 +296,6 @@ func (a *Adapter) streamOnce(
 							CachedTokens int `json:"cached_tokens"`
 						} `json:"input_tokens_details"`
 					} `json:"usage"`
-					Output []struct {
-						Type string `json:"type"`
-					} `json:"output"`
 				} `json:"response"`
 			}
 			if err := json.Unmarshal([]byte(ev.Data), &wrap); err == nil {
@@ -311,12 +303,6 @@ func (a *Adapter) streamOnce(
 				outputTokens = wrap.Response.Usage.OutputTokens
 				inputTokens = wrap.Response.Usage.InputTokens
 				cachedTokens = wrap.Response.Usage.InputTokensDetails.CachedTokens
-				for _, o := range wrap.Response.Output {
-					if o.Type == "function_call" {
-						stopReason = "tool_use"
-						break
-					}
-				}
 			}
 
 		case "response.incomplete":
@@ -363,12 +349,9 @@ func (a *Adapter) streamOnce(
 		if tail.Kind == streamparse.ThinkingChunk {
 			b.EmitThinking(tail.Content)
 		} else {
-			safe, calls := toolParser.Feed(tail.Content)
-			b.EmitText(safe)
-			emitToolCalls(calls)
+			b.EmitText(tail.Content)
 		}
 	}
-	emitToolCalls(toolParser.Flush())
 
 	if emittedToolCall {
 		stopReason = "tool_use"
@@ -510,9 +493,9 @@ func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughSer
 		body["reasoning"] = map[string]any{"effort": effort}
 	}
 	// Match openai/codex HTTP request shape: tool_choice and parallel_tool_calls
-	// are always present; store defaults to false on openai.com.
+	// are always present; keep parallel calls disabled for Claude Code tools.
 	body["tool_choice"] = responsesToolChoice(r.ToolChoice)
-	body["parallel_tool_calls"] = true
+	body["parallel_tool_calls"] = false
 	if _, set := body["store"]; !set {
 		body["store"] = false
 	}

@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/5nYqnHvk/RelayCode/internal/anthropic"
 	"github.com/5nYqnHvk/RelayCode/internal/config"
 	"github.com/5nYqnHvk/RelayCode/internal/provider"
 	"github.com/5nYqnHvk/RelayCode/internal/provider/toolargs"
+	"github.com/5nYqnHvk/RelayCode/internal/provider/toolguard"
 	"github.com/5nYqnHvk/RelayCode/internal/sse"
 	"github.com/5nYqnHvk/RelayCode/internal/streamparse"
 )
@@ -88,52 +90,52 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 		} `json:"usage,omitempty"`
 	}
 
-	// tool-call index -> synthetic Anthropic tool id / name
+	// tool-call index -> synthetic Anthropic tool id / name / args
 	type toolTrack struct {
-		id   string
-		name string
+		id      string
+		name    string
+		args    string
+		emitted bool
 	}
 	tools := map[int]*toolTrack{}
-	aliasBuffers := map[int]string{}
-	flushAliasBuffers := func() {
-		for idx, buffered := range aliasBuffers {
-			track := tools[idx]
-			if track == nil || track.id == "" || track.name == "" {
-				continue
-			}
-			restored, ok := toolargs.RestoreArgs(idx, track.name, buffered, aliases, map[int]string{})
-			if ok {
-				b.EmitToolInput(track.id, restored)
-				delete(aliasBuffers, idx)
-			}
-		}
-	}
+	registry := toolguard.NewRegistry(req.Tools, a.pc.ExperimentalPassthroughServerTools, aliases)
 
 	finishReason := ""
 	completionTokens := 0
+	emittedToolCall := false
 	thinkParser := streamparse.ThinkTagParser{}
-	toolParser := streamparse.HeuristicToolParser{}
-	emitToolCalls := func(calls []streamparse.ToolCall) {
-		for _, call := range calls {
-			if call.ID == "" || call.Name == "" {
-				continue
-			}
-			raw, _ := json.Marshal(call.Input)
-			b.StartTool(call.ID, call.Name)
-			b.EmitToolInput(call.ID, string(raw))
-			b.StopTool(call.ID)
-		}
-	}
 	emitParsedText := func(text string) {
 		for _, chunk := range thinkParser.Feed(text) {
 			if chunk.Kind == streamparse.ThinkingChunk {
 				b.EmitThinking(chunk.Content)
 			} else {
-				safe, calls := toolParser.Feed(chunk.Content)
-				b.EmitText(safe)
-				emitToolCalls(calls)
+				b.EmitText(chunk.Content)
 			}
 		}
+	}
+	emitValidatedToolCalls := func() bool {
+		indices := make([]int, 0, len(tools))
+		for idx := range tools {
+			indices = append(indices, idx)
+		}
+		sort.Ints(indices)
+		emitted := false
+		for _, idx := range indices {
+			track := tools[idx]
+			if track == nil || track.emitted || track.id == "" || track.name == "" {
+				continue
+			}
+			restored, ok := registry.Validate(track.name, track.args)
+			if !ok {
+				continue
+			}
+			b.StartTool(track.id, track.name)
+			b.EmitToolInput(track.id, restored)
+			b.StopTool(track.id)
+			track.emitted = true
+			emitted = true
+		}
+		return emitted
 	}
 
 	err = provider.IterSSE(reader, func(ev provider.SSEEvent) error {
@@ -167,18 +169,13 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 				if tc.Function.Name != "" && t.name == "" {
 					t.name = tc.Function.Name
 				}
-				if t.id == "" || t.name == "" {
-					continue
-				}
-				b.StartTool(t.id, t.name)
-				if tc.Function.Arguments != "" {
-					if restored, ok := toolargs.RestoreArgs(tc.Index, t.name, tc.Function.Arguments, aliases, aliasBuffers); ok {
-						b.EmitToolInput(t.id, restored)
-					}
-				}
+				t.args += tc.Function.Arguments
 			}
 			if ch.FinishReason != "" {
 				finishReason = ch.FinishReason
+				if mapStopReason(finishReason) == "tool_use" && emitValidatedToolCalls() {
+					emittedToolCall = true
+				}
 			}
 		}
 		return nil
@@ -192,17 +189,20 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 		if tail.Kind == streamparse.ThinkingChunk {
 			b.EmitThinking(tail.Content)
 		} else {
-			safe, calls := toolParser.Feed(tail.Content)
-			b.EmitText(safe)
-			emitToolCalls(calls)
+			b.EmitText(tail.Content)
 		}
 	}
-	emitToolCalls(toolParser.Flush())
-	flushAliasBuffers()
+	if emitValidatedToolCalls() {
+		emittedToolCall = true
+	}
 	if completionTokens > 0 {
 		b.SetOutputTokens(completionTokens)
 	}
-	b.SetStopReason(mapStopReason(finishReason))
+	stopReason := mapStopReason(finishReason)
+	if stopReason == "tool_use" && !emittedToolCall {
+		stopReason = "end_turn"
+	}
+	b.SetStopReason(stopReason)
 	b.Finish()
 	return nil
 }

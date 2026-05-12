@@ -53,6 +53,9 @@ func TestBuildRequestFiltersServerToolsByDefault(t *testing.T) {
 	if len(tools) != 1 || tools[0].Name != "bash" || !tools[0].Strict {
 		t.Fatalf("tools = %+v", tools)
 	}
+	if body["parallel_tool_calls"] != false {
+		t.Fatalf("parallel_tool_calls = %v", body["parallel_tool_calls"])
+	}
 }
 
 func TestBuildRequestMapsOutputConfigEffort(t *testing.T) {
@@ -213,6 +216,96 @@ func TestBuildRequestDropsWebSearchReplayItems(t *testing.T) {
 	}
 }
 
+func TestStreamDoesNotExecuteHeuristicTextToolCall(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: response.output_text.delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","delta":"● <function=Read><parameter=file_path>/tmp/x</parameter>"}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":2}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{pc: config.ProviderConfig{BaseURL: server.URL, APIKey: "key"}, client: server.Client()}
+	req := &anthropic.Request{
+		Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Raw: "read"}}},
+		Tools: []anthropic.Tool{{
+			Name:        "Read",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}`),
+		}},
+	}
+	rw := &recordResponseWriter{}
+	builder := sse.NewBuilder(sse.NewWriter(rw), "msg", "model", 1)
+	if err := adapter.Stream(context.Background(), req, "gpt", builder); err != nil {
+		t.Fatal(err)
+	}
+	out := rw.body.String()
+	if strings.Contains(out, `"type":"tool_use"`) || strings.Contains(out, `"stop_reason":"tool_use"`) {
+		t.Fatalf("heuristic text executed as tool:\n%s", out)
+	}
+}
+
+func TestStreamDropsUnknownFunctionCall(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: response.output_item.done\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_item.done","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Write","arguments":"{\"file_path\":\"/tmp/x\"}"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":2},"output":[{"type":"function_call"}]}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{pc: config.ProviderConfig{BaseURL: server.URL, APIKey: "key"}, client: server.Client()}
+	req := &anthropic.Request{
+		Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Raw: "call tool"}}},
+		Tools: []anthropic.Tool{{
+			Name:        "Read",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}`),
+		}},
+	}
+	rw := &recordResponseWriter{}
+	builder := sse.NewBuilder(sse.NewWriter(rw), "msg", "model", 1)
+	if err := adapter.Stream(context.Background(), req, "gpt", builder); err != nil {
+		t.Fatal(err)
+	}
+	out := rw.body.String()
+	if strings.Contains(out, `"type":"tool_use"`) || strings.Contains(out, `"stop_reason":"tool_use"`) {
+		t.Fatalf("unknown tool executed:\n%s", out)
+	}
+}
+
+func TestStreamDropsInvalidFunctionCallArgs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: response.output_item.done\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_item.done","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Read","arguments":"{\"file_path\":123}"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":2},"output":[{"type":"function_call"}]}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{pc: config.ProviderConfig{BaseURL: server.URL, APIKey: "key"}, client: server.Client()}
+	req := &anthropic.Request{
+		Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Raw: "call tool"}}},
+		Tools: []anthropic.Tool{{
+			Name:        "Read",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}`),
+		}},
+	}
+	rw := &recordResponseWriter{}
+	builder := sse.NewBuilder(sse.NewWriter(rw), "msg", "model", 1)
+	if err := adapter.Stream(context.Background(), req, "gpt", builder); err != nil {
+		t.Fatal(err)
+	}
+	out := rw.body.String()
+	if strings.Contains(out, `"type":"tool_use"`) || strings.Contains(out, `"stop_reason":"tool_use"`) {
+		t.Fatalf("invalid args executed:\n%s", out)
+	}
+}
+
 func TestStreamEmitsDoneOnlyFunctionCall(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -239,6 +332,76 @@ func TestStreamEmitsDoneOnlyFunctionCall(t *testing.T) {
 	}
 	out := rw.body.String()
 	for _, want := range []string{`"type":"tool_use"`, `"name":"NotionLike"`, `"partial_json":"{\"type\":\"page\"}"`, `"stop_reason":"tool_use"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %s:\n%s", want, out)
+		}
+	}
+}
+
+func TestStreamRetriesAfterInvalidArgumentsDonePayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: response.output_item.added\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Read"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.function_call_arguments.done\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.function_call_arguments.done","item_id":"fc_1","arguments":"{\"file_path\":123}"}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.output_item.done\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_item.done","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Read","arguments":"{\"file_path\":\"/tmp/x\"}"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":2}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{pc: config.ProviderConfig{BaseURL: server.URL, APIKey: "key"}, client: server.Client()}
+	req := &anthropic.Request{
+		Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Raw: "read"}}},
+		Tools: []anthropic.Tool{{
+			Name:        "Read",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}`),
+		}},
+	}
+	rw := &recordResponseWriter{}
+	builder := sse.NewBuilder(sse.NewWriter(rw), "msg", "model", 1)
+	if err := adapter.Stream(context.Background(), req, "gpt", builder); err != nil {
+		t.Fatal(err)
+	}
+	out := rw.body.String()
+	for _, want := range []string{`"type":"tool_use"`, `"name":"Read"`, `"partial_json":"{\"file_path\":\"/tmp/x\"}"`, `"stop_reason":"tool_use"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %s:\n%s", want, out)
+		}
+	}
+}
+
+func TestStreamEmitsFunctionCallArgumentsDonePayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: response.output_item.added\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"Read"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.function_call_arguments.done\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.function_call_arguments.done","item_id":"fc_1","arguments":"{\"file_path\":\"/tmp/x\"}"}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":2}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{pc: config.ProviderConfig{BaseURL: server.URL, APIKey: "key"}, client: server.Client()}
+	req := &anthropic.Request{
+		Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Raw: "read"}}},
+		Tools: []anthropic.Tool{{
+			Name:        "Read",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}`),
+		}},
+	}
+	rw := &recordResponseWriter{}
+	builder := sse.NewBuilder(sse.NewWriter(rw), "msg", "model", 1)
+	if err := adapter.Stream(context.Background(), req, "gpt", builder); err != nil {
+		t.Fatal(err)
+	}
+	out := rw.body.String()
+	for _, want := range []string{`"type":"tool_use"`, `"name":"Read"`, `"partial_json":"{\"file_path\":\"/tmp/x\"}"`, `"stop_reason":"tool_use"`} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %s:\n%s", want, out)
 		}
