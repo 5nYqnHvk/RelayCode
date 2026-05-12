@@ -24,11 +24,117 @@ type Request struct {
 	Thinking      json.RawMessage `json:"thinking,omitempty"`
 	OutputConfig  *OutputConfig   `json:"output_config,omitempty"`
 	Metadata      json.RawMessage `json:"metadata,omitempty"`
+	Betas         []string        `json:"betas,omitempty"`
+	// ContextManagement and ExtraFields keep Claude Code beta/body params intact
+	// for native Anthropic egress. OpenAI adapters intentionally ignore them.
+	ContextManagement json.RawMessage            `json:"context_management,omitempty"`
+	ExtraFields       map[string]json.RawMessage `json:"-"`
 }
 
 // OutputConfig carries Anthropic output configuration fields.
 type OutputConfig struct {
-	Effort any `json:"effort,omitempty"`
+	Effort      any                        `json:"effort,omitempty"`
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+func (r *Request) UnmarshalJSON(b []byte) error {
+	type requestAlias Request
+	var aux requestAlias
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	*r = Request(aux)
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	for _, key := range knownRequestFields() {
+		delete(raw, key)
+	}
+	if len(raw) > 0 {
+		r.ExtraFields = raw
+	} else {
+		r.ExtraFields = nil
+	}
+	return nil
+}
+
+func (r Request) MarshalJSON() ([]byte, error) {
+	type requestAlias Request
+	raw, err := json.Marshal(requestAlias(r))
+	if err != nil {
+		return nil, err
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, err
+	}
+	for key, value := range r.ExtraFields {
+		if len(value) == 0 {
+			continue
+		}
+		if _, exists := body[key]; !exists {
+			body[key] = value
+		}
+	}
+	return json.Marshal(body)
+}
+
+func knownRequestFields() []string {
+	return []string{
+		"model", "max_tokens", "system", "messages", "tools", "tool_choice",
+		"temperature", "top_p", "top_k", "stop_sequences", "stream",
+		"thinking", "output_config", "metadata", "betas", "context_management",
+	}
+}
+
+func (o *OutputConfig) UnmarshalJSON(b []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["effort"]; ok {
+		var effort any
+		if err := json.Unmarshal(v, &effort); err != nil {
+			return err
+		}
+		o.Effort = effort
+		delete(raw, "effort")
+	}
+	if len(raw) > 0 {
+		o.ExtraFields = raw
+	} else {
+		o.ExtraFields = nil
+	}
+	return nil
+}
+
+func (o OutputConfig) MarshalJSON() ([]byte, error) {
+	body := map[string]json.RawMessage{}
+	if o.Effort != nil {
+		raw, err := json.Marshal(o.Effort)
+		if err != nil {
+			return nil, err
+		}
+		body["effort"] = raw
+	}
+	for key, value := range o.ExtraFields {
+		if len(value) == 0 {
+			continue
+		}
+		if _, exists := body[key]; !exists {
+			body[key] = value
+		}
+	}
+	return json.Marshal(body)
+}
+
+func (o *OutputConfig) RawField(name string) json.RawMessage {
+	if o == nil || o.ExtraFields == nil {
+		return nil
+	}
+	return o.ExtraFields[name]
 }
 
 func (r *Request) ReasoningEffort() (string, bool) {
@@ -69,6 +175,18 @@ func (r *Request) ReasoningEffort() (string, bool) {
 		return "xhigh", true
 	}
 	return "", false
+}
+
+func (r *Request) HasToolSearchBeta() bool {
+	if r == nil {
+		return false
+	}
+	for _, beta := range r.Betas {
+		if strings.Contains(beta, "tool-search") || strings.Contains(beta, "advanced-tool-use") {
+			return true
+		}
+	}
+	return false
 }
 
 // Message is one turn in the conversation.
@@ -123,9 +241,10 @@ type Block struct {
 	Signature string `json:"signature,omitempty"`
 
 	// tool_use
-	ID    string          `json:"id,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
+	ID     string          `json:"id,omitempty"`
+	Name   string          `json:"name,omitempty"`
+	Input  json.RawMessage `json:"input,omitempty"`
+	Caller json.RawMessage `json:"caller,omitempty"`
 
 	// tool_result
 	ToolUseID string          `json:"tool_use_id,omitempty"`
@@ -152,7 +271,13 @@ type Tool struct {
 // (web_search / web_fetch / code execution / etc). These must be stripped
 // from requests forwarded to non-Anthropic backends.
 func (t Tool) IsServerTool() bool {
-	return isServerToolType(t.Type) || isServerToolName(t.Name)
+	if isServerToolType(t.Type) {
+		return true
+	}
+	// Legacy/reduced Anthropic server-tool declarations may arrive with only a
+	// server name. Do not classify explicitly custom/function tools by name;
+	// users can legitimately expose their own web_search/web_fetch functions.
+	return t.Type == "" && len(t.InputSchema) == 0 && isServerToolName(t.Name)
 }
 
 func isServerToolType(typ string) bool {
@@ -232,6 +357,273 @@ func BlocksForUpstream(blocks []Block, passthroughServerTools bool) []Block {
 		return blocks
 	}
 	return StripServerToolBlocks(blocks)
+}
+
+// NormalizeMessagesForUpstream applies the defensive transcript repairs Claude
+// Code performs before API submission: drop invalid thinking tails, remove
+// tool-search-only fields when the beta is absent, and repair tool_use/result
+// adjacency enough for resumed transcripts to remain API-valid.
+func NormalizeMessagesForUpstream(messages []Message, preserveServerTools, preserveToolSearch bool) []Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	filtered := filterOrphanedThinkingOnlyMessages(messages)
+	filtered = filterTrailingThinkingFromLastAssistant(filtered)
+	return ensureToolResultPairing(filtered, preserveServerTools, preserveToolSearch)
+}
+
+func filterOrphanedThinkingOnlyMessages(messages []Message) []Message {
+	out := make([]Message, 0, len(messages))
+	for _, m := range messages {
+		if m.Role != "assistant" {
+			out = append(out, m)
+			continue
+		}
+		blocks := m.Content.AsBlocks()
+		if len(blocks) == 0 || !allThinkingBlocks(blocks) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func filterTrailingThinkingFromLastAssistant(messages []Message) []Message {
+	if len(messages) == 0 || messages[len(messages)-1].Role != "assistant" {
+		return messages
+	}
+	blocks := messages[len(messages)-1].Content.AsBlocks()
+	idx := len(blocks) - 1
+	for idx >= 0 && isThinkingBlock(blocks[idx]) {
+		idx--
+	}
+	if idx == len(blocks)-1 {
+		return messages
+	}
+	out := append([]Message(nil), messages...)
+	if idx < 0 {
+		out[len(out)-1].Content = Content{Blocks: []Block{{Type: "text", Text: "[No message content]"}}}
+	} else {
+		out[len(out)-1].Content = Content{Blocks: append([]Block(nil), blocks[:idx+1]...)}
+	}
+	return out
+}
+
+func ensureToolResultPairing(messages []Message, preserveServerTools, preserveToolSearch bool) []Message {
+	out := make([]Message, 0, len(messages))
+	seenToolUses := map[string]bool{}
+	for i := 0; i < len(messages); i++ {
+		m := messages[i]
+		blocks := cloneBlocks(m.Content.AsBlocks())
+		if !preserveToolSearch {
+			blocks = stripToolSearchOnlyFields(blocks)
+		}
+		if !preserveServerTools {
+			blocks = StripServerToolBlocks(blocks)
+		}
+
+		if m.Role != "assistant" {
+			if m.Role == "user" && hasToolResults(blocks) {
+				blocks = stripToolResults(blocks, nil)
+				if len(blocks) == 0 {
+					text := "[No message content]"
+					if len(out) == 0 {
+						text = "[Orphaned tool result removed due to conversation resume]"
+					}
+					blocks = []Block{{Type: "text", Text: text}}
+				}
+			}
+			if len(blocks) > 0 || m.Role != "user" {
+				m.Content = Content{Blocks: blocks}
+				out = append(out, m)
+			}
+			continue
+		}
+
+		var toolIDs []string
+		kept := make([]Block, 0, len(blocks))
+		for _, b := range blocks {
+			if b.Type == "tool_use" {
+				if b.ID == "" || b.Name == "" || seenToolUses[b.ID] {
+					continue
+				}
+				seenToolUses[b.ID] = true
+				toolIDs = append(toolIDs, b.ID)
+			}
+			kept = append(kept, b)
+		}
+		if len(kept) == 0 {
+			kept = []Block{{Type: "text", Text: "[Tool use interrupted]"}}
+		}
+		m.Content = Content{Blocks: kept}
+		out = append(out, m)
+
+		if len(toolIDs) == 0 {
+			continue
+		}
+		toolSet := stringSet(toolIDs)
+		var existing []string
+		var nextBlocks []Block
+		if i+1 < len(messages) && messages[i+1].Role == "user" {
+			nextBlocks = cloneBlocks(messages[i+1].Content.AsBlocks())
+			if !preserveToolSearch {
+				nextBlocks = stripToolSearchOnlyFields(nextBlocks)
+			}
+			if !preserveServerTools {
+				nextBlocks = StripServerToolBlocks(nextBlocks)
+			}
+			existing = toolResultIDs(nextBlocks)
+		}
+		existingSet := stringSet(existing)
+		var missing []string
+		for _, id := range toolIDs {
+			if !existingSet[id] {
+				missing = append(missing, id)
+			}
+		}
+		if i+1 < len(messages) && messages[i+1].Role == "user" {
+			patched := make([]Block, 0, len(nextBlocks)+len(missing))
+			for _, id := range missing {
+				patched = append(patched, syntheticToolResult(id))
+			}
+			patched = append(patched, stripToolResults(nextBlocks, toolSet)...)
+			if len(patched) == 0 {
+				patched = []Block{{Type: "text", Text: "[No message content]"}}
+			}
+			next := messages[i+1]
+			next.Content = Content{Blocks: patched}
+			out = append(out, next)
+			i++
+		} else if len(missing) > 0 {
+			patched := make([]Block, 0, len(missing))
+			for _, id := range missing {
+				patched = append(patched, syntheticToolResult(id))
+			}
+			out = append(out, Message{Role: "user", Content: Content{Blocks: patched}})
+		}
+	}
+	return out
+}
+
+func cloneBlocks(blocks []Block) []Block {
+	if len(blocks) == 0 {
+		return nil
+	}
+	out := make([]Block, len(blocks))
+	copy(out, blocks)
+	return out
+}
+
+func allThinkingBlocks(blocks []Block) bool {
+	if len(blocks) == 0 {
+		return false
+	}
+	for _, b := range blocks {
+		if !isThinkingBlock(b) {
+			return false
+		}
+	}
+	return true
+}
+
+func isThinkingBlock(b Block) bool {
+	return b.Type == "thinking" || b.Type == "redacted_thinking"
+}
+
+func stripToolSearchOnlyFields(blocks []Block) []Block {
+	out := make([]Block, 0, len(blocks))
+	for _, b := range blocks {
+		b.Caller = nil
+		if b.Type == "tool_result" && len(b.Content) > 0 {
+			b.Content = stripToolReferenceBlocks(b.Content)
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+func stripToolReferenceBlocks(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 || raw[0] != '[' {
+		return raw
+	}
+	var parts []map[string]any
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return raw
+	}
+	changed := false
+	kept := make([]map[string]any, 0, len(parts))
+	for _, part := range parts {
+		if typ, _ := part["type"].(string); typ == "tool_reference" {
+			changed = true
+			continue
+		}
+		kept = append(kept, part)
+	}
+	if !changed {
+		return raw
+	}
+	if len(kept) == 0 {
+		kept = []map[string]any{{"type": "text", "text": "[Tool references removed - tool search not enabled]"}}
+	}
+	buf, err := json.Marshal(kept)
+	if err != nil {
+		return raw
+	}
+	return buf
+}
+
+func hasToolResults(blocks []Block) bool {
+	for _, b := range blocks {
+		if b.Type == "tool_result" {
+			return true
+		}
+	}
+	return false
+}
+
+func stripToolResults(blocks []Block, allowed map[string]bool) []Block {
+	out := make([]Block, 0, len(blocks))
+	seen := map[string]bool{}
+	for _, b := range blocks {
+		if b.Type != "tool_result" {
+			out = append(out, b)
+			continue
+		}
+		if b.ToolUseID == "" || seen[b.ToolUseID] || allowed == nil || !allowed[b.ToolUseID] {
+			continue
+		}
+		seen[b.ToolUseID] = true
+		out = append(out, b)
+	}
+	return out
+}
+
+func toolResultIDs(blocks []Block) []string {
+	ids := make([]string, 0, len(blocks))
+	seen := map[string]bool{}
+	for _, b := range blocks {
+		if b.Type == "tool_result" && b.ToolUseID != "" && !seen[b.ToolUseID] {
+			ids = append(ids, b.ToolUseID)
+			seen[b.ToolUseID] = true
+		}
+	}
+	return ids
+}
+
+func syntheticToolResult(id string) Block {
+	return Block{
+		Type:      "tool_result",
+		ToolUseID: id,
+		Content:   json.RawMessage(`"[Tool result missing due to transcript repair]"`),
+		IsError:   true,
+	}
+}
+
+func stringSet(values []string) map[string]bool {
+	out := make(map[string]bool, len(values))
+	for _, value := range values {
+		out[value] = true
+	}
+	return out
 }
 
 // SystemText collapses the Anthropic-style system field into a single string.

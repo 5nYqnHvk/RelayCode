@@ -3,6 +3,7 @@ package anthropic
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -33,7 +34,7 @@ func TestToolsForUpstreamFiltersAnthropicServerToolsByDefault(t *testing.T) {
 	}
 
 	got := ToolsForUpstream(tools, false)
-	want := []Tool{{Name: "bash", Type: "custom"}, {Name: "plain"}}
+	want := []Tool{{Name: "bash", Type: "custom"}, {Name: "web_search", Type: "custom"}, {Name: "plain"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ToolsForUpstream(false) = %+v, want %+v", got, want)
 	}
@@ -117,5 +118,57 @@ func TestToolResultTextFlattensTextBlocks(t *testing.T) {
 	}
 	if got != "one\ntwo" {
 		t.Fatalf("ToolResultText() = %q", got)
+	}
+}
+
+func TestNormalizeMessagesForUpstreamRepairsTranscript(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: Content{Blocks: []Block{{Type: "tool_result", ToolUseID: "orphan", Content: json.RawMessage(`"old"`)}}}},
+		{Role: "assistant", Content: Content{Blocks: []Block{{Type: "thinking", Thinking: "stale"}}}},
+		{Role: "assistant", Content: Content{Blocks: []Block{{Type: "tool_use", ID: "call_1", Name: "Read", Input: json.RawMessage(`{"file_path":"/tmp/x"}`), Caller: json.RawMessage(`{"name":"ToolSearch"}`)}}}},
+		{Role: "user", Content: Content{Blocks: []Block{{Type: "tool_result", ToolUseID: "call_2", Content: json.RawMessage(`[{"type":"tool_reference","tool_name":"Read"}]`)}}}},
+		{Role: "assistant", Content: Content{Blocks: []Block{{Type: "text", Text: "done"}, {Type: "thinking", Thinking: "tail"}}}},
+	}
+
+	got := NormalizeMessagesForUpstream(msgs, false, false)
+	if len(got) != 4 {
+		t.Fatalf("normalized len = %d: %+v", len(got), got)
+	}
+	if got[0].Role != "user" || got[0].Content.AsBlocks()[0].Type != "text" {
+		t.Fatalf("orphan result was not replaced: %+v", got[0])
+	}
+	assistantTool := got[1].Content.AsBlocks()[0]
+	if assistantTool.Type != "tool_use" || len(assistantTool.Caller) != 0 {
+		t.Fatalf("assistant tool not preserved with caller stripped: %+v", assistantTool)
+	}
+	resultBlocks := got[2].Content.AsBlocks()
+	if len(resultBlocks) != 1 || resultBlocks[0].Type != "tool_result" || resultBlocks[0].ToolUseID != "call_1" || !resultBlocks[0].IsError {
+		t.Fatalf("missing synthetic tool_result: %+v", resultBlocks)
+	}
+	lastBlocks := got[3].Content.AsBlocks()
+	if len(lastBlocks) != 1 || lastBlocks[0].Type != "text" || lastBlocks[0].Text != "done" {
+		t.Fatalf("trailing thinking not stripped: %+v", lastBlocks)
+	}
+}
+
+func TestRequestPreservesBetaAndExtraBodyFields(t *testing.T) {
+	var req Request
+	if err := json.Unmarshal([]byte(`{"model":"claude","messages":[],"betas":["advanced-tool-use-2025-11-20"],"context_management":{"edits":[{"type":"clear"}]},"speed":"fast","output_config":{"effort":"high","format":{"type":"json_schema","schema":{"type":"object"}}}}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	if !req.HasToolSearchBeta() || len(req.ContextManagement) == 0 || len(req.ExtraFields["speed"]) == 0 {
+		t.Fatalf("request beta/body fields not captured: %+v", req)
+	}
+	if req.OutputConfig == nil || req.OutputConfig.RawField("format") == nil {
+		t.Fatalf("output_config extra fields not captured: %+v", req.OutputConfig)
+	}
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"betas"`, `"context_management"`, `"speed"`, `"format"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("marshaled request missing %s: %s", want, raw)
+		}
 	}
 }
