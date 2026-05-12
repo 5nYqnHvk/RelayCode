@@ -36,6 +36,7 @@ providers:
     kind: openai_responses                 # POST /v1/responses
     base_url: https://api.openai.com/v1
     api_key: "${OPENAI_API_KEY}"
+    # experimental_previous_response_id: false   # opt into non-Codex HTTP previous_response_id chaining
     # http_timeout_seconds: 300
     # http_proxy: "${HTTPS_PROXY}"
     # max_retries: 2

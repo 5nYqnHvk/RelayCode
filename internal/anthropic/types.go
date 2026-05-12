@@ -372,6 +372,34 @@ func NormalizeMessagesForUpstream(messages []Message, preserveServerTools, prese
 	return ensureToolResultPairing(filtered, preserveServerTools, preserveToolSearch)
 }
 
+// NormalizePreviousResponseTail prepares the incremental tail sent alongside
+// previous_response_id. Tool results are intentionally preserved even when the
+// matching tool_use is not present in this slice: that call already exists in
+// the upstream response being continued.
+func NormalizePreviousResponseTail(messages []Message, preserveServerTools, preserveToolSearch bool) []Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	filtered := filterOrphanedThinkingOnlyMessages(messages)
+	filtered = filterTrailingThinkingFromLastAssistant(filtered)
+	out := make([]Message, 0, len(filtered))
+	for _, m := range filtered {
+		blocks := cloneBlocks(m.Content.AsBlocks())
+		if !preserveToolSearch {
+			blocks = stripToolSearchOnlyFields(blocks)
+		}
+		if !preserveServerTools {
+			blocks = StripServerToolBlocks(blocks)
+		}
+		if len(blocks) == 0 && m.Role == "user" {
+			continue
+		}
+		m.Content = Content{Blocks: blocks}
+		out = append(out, m)
+	}
+	return out
+}
+
 func filterOrphanedThinkingOnlyMessages(messages []Message) []Message {
 	out := make([]Message, 0, len(messages))
 	for _, m := range messages {

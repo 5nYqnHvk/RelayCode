@@ -478,7 +478,7 @@ func TestStreamEmitsFunctionCallArgumentsDonePayload(t *testing.T) {
 	}
 }
 
-func TestStreamChainsPreviousResponseIDWithTailInput(t *testing.T) {
+func TestStreamChainsPreviousResponseIDWhenExperimental(t *testing.T) {
 	var bodies []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
@@ -487,11 +487,75 @@ func TestStreamChainsPreviousResponseIDWithTailInput(t *testing.T) {
 			t.Fatal(err)
 		}
 		bodies = append(bodies, body)
+		ids := []string{"resp_1", "resp_2", "resp_3"}
+		id := ids[len(bodies)-1]
 		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: response.completed
+` + `data: {"type":"response.completed","response":{"id":"` + id + `","usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{pc: config.ProviderConfig{BaseURL: server.URL, APIKey: "key", ExperimentalPreviousResponseID: true}, client: server.Client()}
+	adapter.SetSession(session.NewStore(time.Hour, 10), "openai")
+	first := &anthropic.Request{Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Raw: "first"}}}}
+	second := &anthropic.Request{Messages: []anthropic.Message{
+		{Role: "user", Content: anthropic.Content{Raw: "first"}},
+		{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "text", Text: "reply"}, {Type: "tool_use", ID: "call_1", Name: "Read", Input: json.RawMessage(`{"file_path":"/tmp/a"}`)}}}},
+		{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_result", ToolUseID: "call_1", Content: json.RawMessage(`"ok 1"`)}}}},
+	}}
+	third := &anthropic.Request{Messages: []anthropic.Message{
+		{Role: "user", Content: anthropic.Content{Raw: "first"}},
+		{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "text", Text: "reply"}, {Type: "tool_use", ID: "call_1", Name: "Read", Input: json.RawMessage(`{"file_path":"/tmp/a"}`)}}}},
+		{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_result", ToolUseID: "call_1", Content: json.RawMessage(`"ok 1"`)}}}},
+		{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "text", Text: "next"}, {Type: "tool_use", ID: "call_2", Name: "Read", Input: json.RawMessage(`{"file_path":"/tmp/b"}`)}}}},
+		{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_result", ToolUseID: "call_2", Content: json.RawMessage(`"ok 2"`)}}}},
+	}}
+
+	for _, req := range []*anthropic.Request{first, second, third} {
+		rw := &recordResponseWriter{}
+		builder := sse.NewBuilder(sse.NewWriter(rw), "msg", "model", 1)
+		if err := adapter.Stream(context.Background(), req, "gpt", builder); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(bodies) != 3 {
+		t.Fatalf("bodies len = %d", len(bodies))
+	}
+	if _, ok := bodies[0]["previous_response_id"]; ok {
+		t.Fatalf("first request unexpectedly chained: %+v", bodies[0])
+	}
+	assertFunctionOutputTail := func(body map[string]any, prev, callID, output string) {
+		t.Helper()
+		if body["previous_response_id"] != prev {
+			t.Fatalf("previous_response_id = %+v body=%+v", body["previous_response_id"], body)
+		}
+		input := body["input"].([]any)
+		if len(input) != 1 {
+			t.Fatalf("tail input = %+v", input)
+		}
+		item := input[0].(map[string]any)
+		if item["type"] != "function_call_output" || item["call_id"] != callID || item["output"] != output || body["store"] != true {
+			t.Fatalf("tail request body = %+v", body)
+		}
+	}
+	assertFunctionOutputTail(bodies[1], "resp_1", "call_1", "ok 1")
+	assertFunctionOutputTail(bodies[2], "resp_2", "call_2", "ok 2")
+}
+
+func TestStreamDoesNotUsePreviousResponseIDByDefault(t *testing.T) {
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		bodies = append(bodies, body)
 		id := "resp_1"
 		if len(bodies) == 2 {
 			id = "resp_2"
 		}
+		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(`event: response.completed
 ` + `data: {"type":"response.completed","response":{"id":"` + id + `","usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}}` + "\n\n"))
 	}))
@@ -502,8 +566,8 @@ func TestStreamChainsPreviousResponseIDWithTailInput(t *testing.T) {
 	first := &anthropic.Request{Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Raw: "first"}}}}
 	second := &anthropic.Request{Messages: []anthropic.Message{
 		{Role: "user", Content: anthropic.Content{Raw: "first"}},
-		{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "text", Text: "reply"}}}},
-		{Role: "user", Content: anthropic.Content{Raw: "second"}},
+		{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "text", Text: "reply"}, {Type: "tool_use", ID: "call_1", Name: "Read", Input: json.RawMessage(`{"file_path":"/tmp/a"}`)}}}},
+		{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_result", ToolUseID: "call_1", Content: json.RawMessage(`"ok 1"`)}}}},
 	}}
 
 	for _, req := range []*anthropic.Request{first, second} {
@@ -516,21 +580,14 @@ func TestStreamChainsPreviousResponseIDWithTailInput(t *testing.T) {
 	if len(bodies) != 2 {
 		t.Fatalf("bodies len = %d", len(bodies))
 	}
-	if _, ok := bodies[0]["previous_response_id"]; ok {
-		t.Fatalf("first request unexpectedly chained: %+v", bodies[0])
+	if _, ok := bodies[1]["previous_response_id"]; ok {
+		t.Fatalf("previous_response_id unexpectedly present: %+v", bodies[1])
 	}
-	if bodies[1]["previous_response_id"] != "resp_1" {
-		t.Fatalf("second previous_response_id = %+v", bodies[1])
+	if bodies[1]["store"] != false {
+		t.Fatalf("default HTTP replay should keep store false, body = %+v", bodies[1])
 	}
-	input := bodies[1]["input"].([]any)
-	if len(input) != 1 {
-		t.Fatalf("tail input = %+v", input)
-	}
-	item := input[0].(map[string]any)
-	content := item["content"].([]any)
-	part := content[0].(map[string]any)
-	if item["role"] != "user" || part["text"] != "second" || bodies[1]["store"] != true {
-		t.Fatalf("tail request body = %+v", bodies[1])
+	if len(bodies[1]["input"].([]any)) != 4 {
+		t.Fatalf("default HTTP replay should include full input, body = %+v", bodies[1])
 	}
 }
 

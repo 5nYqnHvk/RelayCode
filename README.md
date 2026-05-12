@@ -179,6 +179,7 @@ See `relaycode.example.yaml` for full commented config.
 - Adds a short tool-use bridge instruction for OpenAI models so tool-work requests do not end after a text preamble.
 - Maps Anthropic `tool_choice: {"type":"any"}` to OpenAI `required`.
 - Drops replayed raw Anthropic thinking blocks and strips unsupported server-tool declarations unless `experimental_passthrough_server_tools` is enabled.
+- HTTP Responses follows Codex: full input every turn with `prompt_cache_key`; `previous_response_id` is left off unless `experimental_previous_response_id` is explicitly enabled for a backend that supports HTTP continuation.
 - Rejects user image blocks.
 - `codex_auth_path` can read local Codex auth JSON and use `tokens.access_token` / `tokens.account_id` for compatible OpenAI endpoints.
 
@@ -263,7 +264,7 @@ Debug logging:
 
 ## Troubleshooting
 
-- **`cache_miss` every turn:** Claude Code may not be sending `metadata.user_id.session_id`; prefix reuse falls back to instructions/tools fingerprint.
+- **`prompt_cache=miss` every turn:** Claude Code may not be sending `metadata.user_id.session_id`; prefix reuse falls back to instructions/tools fingerprint. `full_replay` is expected on HTTP Responses and only means the full input was sent.
 - **`401`/`403` from upstream:** API key missing or wrong. Check env var referenced in `relaycode.yaml`.
 - **`429` from upstream:** set `providers.<name>.max_retries` and `max_concurrency`.
 - **Long requests time out:** raise `providers.<name>.http_timeout_seconds`.

@@ -75,9 +75,9 @@ func (a *Adapter) streamOnce(
 		lookup        *session.Lookup
 		cacheKey      string
 		promptCacheOk bool
+		err           error
 	)
 	if a.store != nil {
-		var err error
 		lookup, err = a.store.Prepare(a.providerName, upstreamModel, req)
 		if err != nil {
 			return err
@@ -104,21 +104,27 @@ func (a *Adapter) streamOnce(
 
 	bodyReq := req
 	chained := false
-	if !forceFull && lookup != nil && lookup.Chain != nil && lookup.Chain.ResponseID != "" {
+	if !forceFull && a.pc.ExperimentalPreviousResponseID && lookup != nil && lookup.Chain != nil && lookup.Chain.ResponseID != "" {
 		tailReq := *req
 		tailReq.Messages = lookup.Tail
 		bodyReq = &tailReq
 		chained = true
 	}
 
-	body, aliases, err := buildRequestWithAliases(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools)
+	var body map[string]any
+	var aliases map[string]map[string]string
+	if chained {
+		body, aliases, err = buildTailRequestWithAliases(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools)
+	} else {
+		body, aliases, err = buildRequestWithAliases(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools)
+	}
 	if err != nil {
 		return err
 	}
 	if chained {
 		body["previous_response_id"] = lookup.Chain.ResponseID
 	}
-	if a.store != nil {
+	if a.pc.ExperimentalPreviousResponseID {
 		body["store"] = true
 	}
 	if promptCacheOk {
@@ -415,22 +421,38 @@ func (a *Adapter) streamOnce(
 		b.SetOutputTokens(outputTokens)
 	}
 	b.SetStopReason(stopReason)
-	b.Finish()
 
 	if !sawUpstreamError && a.store != nil && lookup != nil && newResponseID != "" {
 		a.store.Commit(lookup, a.providerName, upstreamModel, len(req.Messages), newResponseID, inputTokens, outputTokens)
 		a.store.Stats.InputTokens.Add(int64(inputTokens))
 		a.store.Stats.OutputTokens.Add(int64(outputTokens))
-		if cachedTokens > 0 {
+		if chained {
 			a.store.Stats.Hits.Add(1)
-			log.Printf("responses: cache_hit provider=%s model=%s cached_tokens=%d input_tokens=%d output_tokens=%d resp=%s",
-				a.providerName, upstreamModel, cachedTokens, inputTokens, outputTokens, newResponseID)
+			log.Printf("responses: session_chain provider=%s model=%s prev=%s tail_messages=%d total_messages=%d cached_tokens=%d input_tokens=%d output_tokens=%d stop_reason=%s resp=%s",
+				a.providerName, upstreamModel, lookup.Chain.ResponseID, len(lookup.Tail), len(req.Messages), cachedTokens, inputTokens, outputTokens, stopReason, newResponseID)
 		} else {
-			a.store.Stats.Misses.Add(1)
-			log.Printf("responses: cache_miss provider=%s model=%s input_tokens=%d output_tokens=%d resp=%s",
-				a.providerName, upstreamModel, inputTokens, outputTokens, newResponseID)
+			if cachedTokens > 0 {
+				a.store.Stats.Hits.Add(1)
+			} else {
+				a.store.Stats.Misses.Add(1)
+			}
+			reason := "full replay"
+			if forceFull {
+				reason = "forced full replay"
+			} else if !a.pc.ExperimentalPreviousResponseID {
+				reason = "codex-compatible http replay"
+			} else if lookup.FullReplayReason != "" {
+				reason = lookup.FullReplayReason
+			}
+			promptCache := "miss"
+			if cachedTokens > 0 {
+				promptCache = "hit"
+			}
+			log.Printf("responses: full_replay provider=%s model=%s reason=%q prompt_cache=%s cached_tokens=%d input_tokens=%d output_tokens=%d stop_reason=%s resp=%s",
+				a.providerName, upstreamModel, reason, promptCache, cachedTokens, inputTokens, outputTokens, stopReason, newResponseID)
 		}
 	}
+	b.Finish()
 	return nil
 }
 
@@ -554,7 +576,20 @@ func buildRequest(r *anthropic.Request, model string, passthroughServerTools boo
 }
 
 func buildRequestWithAliases(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, map[string]map[string]string, error) {
-	items, err := convertMessagesToItems(anthropic.NormalizeMessagesForUpstream(r.Messages, passthroughServerTools, r.HasToolSearchBeta()), passthroughServerTools)
+	return buildRequestWithNormalizer(r, model, passthroughServerTools, anthropic.NormalizeMessagesForUpstream)
+}
+
+func buildTailRequestWithAliases(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, map[string]map[string]string, error) {
+	return buildRequestWithNormalizer(r, model, passthroughServerTools, anthropic.NormalizePreviousResponseTail)
+}
+
+func buildRequestWithNormalizer(
+	r *anthropic.Request,
+	model string,
+	passthroughServerTools bool,
+	normalize func([]anthropic.Message, bool, bool) []anthropic.Message,
+) (map[string]any, map[string]map[string]string, error) {
+	items, err := convertMessagesToItems(normalize(r.Messages, passthroughServerTools, r.HasToolSearchBeta()), passthroughServerTools)
 	if err != nil {
 		return nil, nil, err
 	}

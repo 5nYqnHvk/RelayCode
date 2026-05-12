@@ -33,3 +33,37 @@ func TestHashToolsIncludesTypeAndStrict(t *testing.T) {
 		t.Fatalf("tool strict change did not change hash: %s", h1)
 	}
 }
+
+func TestPrepareChainsAppendedLastUserBlocks(t *testing.T) {
+	store := NewStore(0, 10)
+	first := &anthropic.Request{Messages: []anthropic.Message{
+		{Role: "user", Content: anthropic.Content{Raw: "first"}},
+		{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "text", Text: "ready"}}}},
+		{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "text", Text: "old"}}}},
+	}}
+	lookup, err := store.Prepare("provider", "model", first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Commit(lookup, "provider", "model", len(first.Messages), "resp_1", 1, 1)
+
+	second := &anthropic.Request{Messages: []anthropic.Message{
+		{Role: "user", Content: anthropic.Content{Raw: "first"}},
+		{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "text", Text: "ready"}}}},
+		{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "text", Text: "old"}, {Type: "text", Text: "new"}}}},
+	}}
+	lookup, err = store.Prepare("provider", "model", second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lookup.Chain == nil || lookup.Chain.ResponseID != "resp_1" {
+		t.Fatalf("chain = %+v reason=%q", lookup.Chain, lookup.FullReplayReason)
+	}
+	if len(lookup.Tail) != 1 {
+		t.Fatalf("tail = %+v", lookup.Tail)
+	}
+	blocks := lookup.Tail[0].Content.AsBlocks()
+	if lookup.Tail[0].Role != "user" || len(blocks) != 1 || blocks[0].Text != "new" {
+		t.Fatalf("tail = %+v", lookup.Tail)
+	}
+}

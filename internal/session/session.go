@@ -1,6 +1,6 @@
-// Package session maintains an in-memory map of upstream Responses API
-// sessions so repeat Claude Code turns can chain via previous_response_id
-// instead of replaying the full conversation.
+// Package session maintains in-memory Responses request fingerprints for
+// prompt_cache_key reuse and optional experimental previous_response_id
+// continuation on providers that explicitly support it.
 package session
 
 import (
@@ -18,11 +18,14 @@ import (
 // Entry is one cached session snapshot.
 type Entry struct {
 	Key              string // fingerprint across all messages[:MessageCount]
+	ParentKey        string // fingerprint across messages[:MessageCount-1]
 	Provider         string // cfg provider name
 	UpstreamModel    string // upstream model id
+	SessionID        string // Claude Code conversation id, when available
 	ToolsHash        string // tools fingerprint
 	InstructionsHash string // instructions fingerprint
 	MessageCount     int    // messages[:MessageCount] are covered by this session
+	LastMessage      anthropic.Message
 	ResponseID       string // upstream response.id to chain from
 	LastUsed         time.Time
 	OutputTokens     int // cumulative output tokens for logging
@@ -43,6 +46,9 @@ type Lookup struct {
 	// Always set: a fingerprint covering the full message list. Used to key
 	// the new session entry once the upstream call succeeds.
 	NewKey           string
+	NewParentKey     string
+	NewLastMessage   anthropic.Message
+	SessionID        string
 	ToolsHash        string
 	InstructionsHash string
 }
@@ -96,9 +102,17 @@ func (s *Store) Prepare(provider, upstreamModel string, req *anthropic.Request) 
 	}
 	// full-length key
 	fullKey := combineKey(provider, upstreamModel, instrHash, toolsHash, prefixHashes[len(prefixHashes)-1])
+	parentKey := ""
+	if len(prefixHashes) > 1 {
+		parentKey = combineKey(provider, upstreamModel, instrHash, toolsHash, prefixHashes[len(prefixHashes)-2])
+	}
+	sessionID := req.SessionID()
 
 	lookup := &Lookup{
 		NewKey:           fullKey,
+		NewParentKey:     parentKey,
+		NewLastMessage:   req.Messages[len(req.Messages)-1],
+		SessionID:        sessionID,
 		ToolsHash:        toolsHash,
 		InstructionsHash: instrHash,
 	}
@@ -107,6 +121,13 @@ func (s *Store) Prepare(provider, upstreamModel string, req *anthropic.Request) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked()
+
+	if e, tail := s.findAppendedUserTailLocked(provider, upstreamModel, sessionID, instrHash, toolsHash, parentKey, len(req.Messages), req.Messages[len(req.Messages)-1]); e != nil {
+		lookup.Chain = e
+		lookup.Tail = tail
+		e.LastUsed = time.Now()
+		return lookup, nil
+	}
 
 	// Session matching: a stored session with message_count=k means the
 	// upstream response covers messages[:k] plus its own assistant reply.
@@ -124,7 +145,7 @@ func (s *Store) Prepare(provider, upstreamModel string, req *anthropic.Request) 
 		if !ok {
 			continue
 		}
-		if e.Provider != provider || e.UpstreamModel != upstreamModel {
+		if e.Provider != provider || e.UpstreamModel != upstreamModel || e.SessionID != sessionID {
 			continue
 		}
 		if e.ToolsHash != toolsHash || e.InstructionsHash != instrHash {
@@ -175,11 +196,14 @@ func (s *Store) Commit(lookup *Lookup, provider, upstreamModel string, messageCo
 	}
 	s.entries[lookup.NewKey] = &Entry{
 		Key:              lookup.NewKey,
+		ParentKey:        lookup.NewParentKey,
 		Provider:         provider,
 		UpstreamModel:    upstreamModel,
+		SessionID:        lookup.SessionID,
 		ToolsHash:        lookup.ToolsHash,
 		InstructionsHash: lookup.InstructionsHash,
 		MessageCount:     messageCount,
+		LastMessage:      lookup.NewLastMessage,
 		ResponseID:       responseID,
 		LastUsed:         time.Now(),
 		InputTokens:      inputTokens,
@@ -237,6 +261,67 @@ func (s *Store) evictLRULocked() {
 	if oldestKey != "" {
 		delete(s.entries, oldestKey)
 	}
+}
+
+func (s *Store) findAppendedUserTailLocked(provider, upstreamModel, sessionID, instrHash, toolsHash, parentKey string, messageCount int, last anthropic.Message) (*Entry, []anthropic.Message) {
+	if last.Role != "user" || (sessionID == "" && parentKey == "") {
+		return nil, nil
+	}
+	var best *Entry
+	var bestTail anthropic.Message
+	for _, e := range s.entries {
+		if e.Provider != provider || e.UpstreamModel != upstreamModel || e.SessionID != sessionID {
+			continue
+		}
+		if e.ToolsHash != toolsHash || e.InstructionsHash != instrHash {
+			continue
+		}
+		if e.MessageCount != messageCount || e.ParentKey != parentKey {
+			continue
+		}
+		tail, ok := appendedUserTail(e.LastMessage, last)
+		if !ok {
+			continue
+		}
+		if best == nil || e.LastUsed.After(best.LastUsed) {
+			best = e
+			bestTail = tail
+		}
+	}
+	if best == nil {
+		return nil, nil
+	}
+	return best, []anthropic.Message{bestTail}
+}
+
+func appendedUserTail(previous, current anthropic.Message) (anthropic.Message, bool) {
+	if previous.Role != "user" || current.Role != "user" {
+		return anthropic.Message{}, false
+	}
+	prevBlocks := previous.Content.AsBlocks()
+	curBlocks := current.Content.AsBlocks()
+	if len(prevBlocks) == 0 || len(curBlocks) <= len(prevBlocks) {
+		return anthropic.Message{}, false
+	}
+	for i := range prevBlocks {
+		if !sameBlock(prevBlocks[i], curBlocks[i]) {
+			return anthropic.Message{}, false
+		}
+	}
+	tailBlocks := append([]anthropic.Block(nil), curBlocks[len(prevBlocks):]...)
+	return anthropic.Message{Role: "user", Content: anthropic.Content{Blocks: tailBlocks}}, true
+}
+
+func sameBlock(a, b anthropic.Block) bool {
+	aj, err := canonicalJSON(normalizeBlock(a))
+	if err != nil {
+		return false
+	}
+	bj, err := canonicalJSON(normalizeBlock(b))
+	if err != nil {
+		return false
+	}
+	return string(aj) == string(bj)
 }
 
 func chainableTail(tail []anthropic.Message) bool {

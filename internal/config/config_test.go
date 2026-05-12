@@ -33,6 +33,7 @@ providers:
     base_url: https://api.example.com/v1/
     api_key: "${TEST_RELAYCODE_KEY}"
     experimental_passthrough_server_tools: true
+    experimental_previous_response_id: true
     codex_auth_path: /tmp/codex-auth.json
   openai_chat:
     kind: openai_chat
@@ -61,6 +62,7 @@ providers:
 		provider.BaseURL != "https://api.example.com/v1" ||
 		provider.APIKey != "secret-key" ||
 		!provider.ExperimentalPassthroughServerTools ||
+		!provider.ExperimentalPreviousResponseID ||
 		provider.CodexAuthPath != "/tmp/codex-auth.json" {
 		t.Fatalf("openai_responses provider = %+v", provider)
 	}

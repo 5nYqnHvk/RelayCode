@@ -57,6 +57,7 @@ type ProviderConfig struct {
 	HTTPProxy                          string
 	MaxRetries                         int
 	MaxConcurrency                     int
+	ExperimentalPreviousResponseID     bool
 }
 
 // Load reads the YAML config at path and validates it.
@@ -156,6 +157,7 @@ func fromDoc(doc yamlMap) (*Config, error) {
 			HTTPProxy:                          expandEnv(stringAt(entry, "http_proxy")),
 			MaxRetries:                         intAt(entry, "max_retries"),
 			MaxConcurrency:                     intAt(entry, "max_concurrency"),
+			ExperimentalPreviousResponseID:     boolAt(entry, "experimental_previous_response_id"),
 		}
 		if pc.Kind != KindOpenAIChat && pc.Kind != KindOpenAIResponses && pc.Kind != KindAnthropicMessages {
 			return nil, fmt.Errorf("providers.%s: unknown kind %q (want openai_chat|openai_responses|anthropic_messages)", name, pc.Kind)
