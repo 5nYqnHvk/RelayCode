@@ -4,6 +4,8 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -258,18 +260,24 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 func authOK(r *http.Request, expected string) bool {
-	if h := r.Header.Get("x-api-key"); h != "" && h == expected {
+	if h := r.Header.Get("x-api-key"); h != "" && tokenEqual(h, expected) {
 		return true
 	}
 	if h := r.Header.Get("Authorization"); h != "" {
-		if len(h) > 7 && h[:7] == "Bearer " && h[7:] == expected {
+		if len(h) > 7 && h[:7] == "Bearer " && tokenEqual(h[7:], expected) {
 			return true
 		}
-		if h == expected {
+		if tokenEqual(h, expected) {
 			return true
 		}
 	}
 	return false
+}
+
+func tokenEqual(got, expected string) bool {
+	gotSum := sha256.Sum256([]byte(got))
+	expectedSum := sha256.Sum256([]byte(expected))
+	return subtle.ConstantTimeCompare(gotSum[:], expectedSum[:]) == 1
 }
 
 func newMessageID() string {
