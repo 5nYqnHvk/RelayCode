@@ -98,6 +98,7 @@ func restoreAliasValue(value any, aliases map[string]string) any {
 			out[i] = restoreAliasValue(item, aliases)
 		}
 		return out
+	default:
+		return value
 	}
-	return value
 }

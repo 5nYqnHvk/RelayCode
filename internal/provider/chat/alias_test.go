@@ -34,7 +34,7 @@ func TestBuildRequestAliasesTypeArgument(t *testing.T) {
 	}
 }
 
-func TestRestoreToolArgsRestoresAliases(t *testing.T) {
+func TestRestoreToolArgsRestoresAliasesRecursively(t *testing.T) {
 	aliases := map[string]map[string]string{"NotionLike": {"_fcc_arg_type": "type"}}
 	buffers := map[int]string{}
 	out, ok := toolargs.RestoreArgs(0, "NotionLike", `{"_fcc_arg_type":"page","nested":{"_fcc_arg_type":"child"}}`, aliases, buffers)
