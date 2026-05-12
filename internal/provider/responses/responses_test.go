@@ -52,7 +52,7 @@ func TestBuildRequestFiltersServerToolsByDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	tools := body["tools"].([]toolDecl)
-	if len(tools) != 1 || tools[0].Name != "bash" || !tools[0].Strict {
+	if len(tools) != 1 || tools[0].Name != "bash" || tools[0].Strict == nil || !*tools[0].Strict {
 		t.Fatalf("tools = %+v", tools)
 	}
 	if body["parallel_tool_calls"] != false {
@@ -132,6 +132,26 @@ func TestBuildRequestAliasesTypeArgument(t *testing.T) {
 	}
 }
 
+func TestBuildRequestDeclaresSchemaLessCustomToolAsResponsesCustom(t *testing.T) {
+	req := &anthropic.Request{
+		Tools:      []anthropic.Tool{{Name: "apply_patch", Type: "custom", Description: "apply diff"}},
+		ToolChoice: json.RawMessage(`{"type":"tool","name":"apply_patch"}`),
+	}
+
+	body, err := buildRequest(req, "gpt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := body["tools"].([]toolDecl)
+	if len(tools) != 1 || tools[0].Type != "custom" || tools[0].Name != "apply_patch" || tools[0].Format["type"] != "text" || tools[0].Parameters != nil {
+		t.Fatalf("tools = %+v", tools)
+	}
+	choice := body["tool_choice"].(map[string]any)
+	if choice["type"] != "custom" || choice["name"] != "apply_patch" {
+		t.Fatalf("tool_choice = %+v", choice)
+	}
+}
+
 func TestBuildRequestPassesServerToolsAsFunctionsWhenExperimental(t *testing.T) {
 	req := &anthropic.Request{
 		Tools: []anthropic.Tool{
@@ -148,7 +168,7 @@ func TestBuildRequestPassesServerToolsAsFunctionsWhenExperimental(t *testing.T) 
 	if len(tools) != 2 {
 		t.Fatalf("tools = %+v", tools)
 	}
-	if tools[0].Type != "function" || tools[0].Name != "bash" || tools[0].Strict {
+	if tools[0].Type != "function" || tools[0].Name != "bash" || tools[0].Strict == nil || *tools[0].Strict {
 		t.Fatalf("function tool = %+v", tools[0])
 	}
 	if tools[1].Type != "function" || tools[1].Name != "web_search" || tools[1].ExternalWebAccess != nil {
@@ -588,6 +608,30 @@ func TestStreamDoesNotUsePreviousResponseIDByDefault(t *testing.T) {
 	}
 	if len(bodies[1]["input"].([]any)) != 4 {
 		t.Fatalf("default HTTP replay should include full input, body = %+v", bodies[1])
+	}
+}
+
+func TestBuildRequestReplaysCustomToolCallAndOutput(t *testing.T) {
+	req := &anthropic.Request{
+		Tools: []anthropic.Tool{{Name: "apply_patch", Type: "custom"}},
+		Messages: []anthropic.Message{
+			{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_use", ID: "call_1", Name: "apply_patch", Input: json.RawMessage(`{"input":"*** Begin"}`)}}}},
+			{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_result", ToolUseID: "call_1", Content: json.RawMessage(`"ok"`)}}}},
+		},
+	}
+	body, err := buildRequest(req, "gpt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := body["input"].([]inputItem)
+	if len(items) != 2 {
+		t.Fatalf("input = %+v", items)
+	}
+	if items[0].Type != "custom_tool_call" || items[0].Input != "*** Begin" || items[0].Args != "" {
+		t.Fatalf("custom call item = %+v", items[0])
+	}
+	if items[1].Type != "custom_tool_call_output" || items[1].Output != "ok" {
+		t.Fatalf("custom output item = %+v", items[1])
 	}
 }
 

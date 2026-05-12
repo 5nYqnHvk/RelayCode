@@ -258,6 +258,9 @@ func buildRequest(r *anthropic.Request, model string, passthroughServerTools boo
 }
 
 func buildRequestWithAliases(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, map[string]map[string]string, error) {
+	if fields := r.UnsupportedOpenAIFields(); len(fields) > 0 {
+		return nil, nil, fmt.Errorf("openai_chat does not support Anthropic-only fields: %s", strings.Join(fields, ", "))
+	}
 	messages, err := convertMessages(r, passthroughServerTools)
 	if err != nil {
 		return nil, nil, err
@@ -284,7 +287,11 @@ func buildRequestWithAliases(r *anthropic.Request, model string, passthroughServ
 	}
 	body["tool_choice"] = chatToolChoice(r.ToolChoice)
 	body["parallel_tool_calls"] = false
-	if responseFormat := chatResponseFormat(r); responseFormat != nil {
+	responseFormat, err := chatResponseFormat(r)
+	if err != nil {
+		return nil, nil, err
+	}
+	if responseFormat != nil {
 		body["response_format"] = responseFormat
 	}
 	aliases := map[string]map[string]string{}
@@ -339,44 +346,48 @@ func chatToolChoice(raw json.RawMessage) any {
 	return "auto"
 }
 
-func chatResponseFormat(r *anthropic.Request) any {
+func chatResponseFormat(r *anthropic.Request) (any, error) {
 	if r == nil || r.OutputConfig == nil {
-		return nil
+		return nil, nil
 	}
 	format := r.OutputConfig.RawField("format")
 	if len(format) == 0 {
-		return nil
+		return nil, nil
 	}
 	var f map[string]any
 	if err := json.Unmarshal(format, &f); err != nil {
-		return nil
+		return nil, fmt.Errorf("output_config.format: %w", err)
 	}
 	typ, _ := f["type"].(string)
 	if typ == "" {
-		return nil
+		return nil, fmt.Errorf("output_config.format.type is required")
 	}
-	if typ != "json_schema" {
-		return map[string]any{"type": typ}
-	}
-	schema, ok := f["schema"]
-	if !ok {
-		return nil
-	}
-	name, _ := f["name"].(string)
-	if name == "" {
-		name = "relaycode_output_schema"
-	}
-	strict, ok := f["strict"].(bool)
-	if !ok {
-		strict = true
-	}
-	return map[string]any{
-		"type": "json_schema",
-		"json_schema": map[string]any{
-			"name":   name,
-			"schema": schema,
-			"strict": strict,
-		},
+	switch typ {
+	case "json_schema":
+		schema, ok := f["schema"]
+		if !ok {
+			return nil, fmt.Errorf("output_config.format.schema is required for json_schema")
+		}
+		name, _ := f["name"].(string)
+		if name == "" {
+			name = "relaycode_output_schema"
+		}
+		strict, ok := f["strict"].(bool)
+		if !ok {
+			strict = true
+		}
+		return map[string]any{
+			"type": "json_schema",
+			"json_schema": map[string]any{
+				"name":   name,
+				"schema": schema,
+				"strict": strict,
+			},
+		}, nil
+	case "text", "json_object":
+		return map[string]any{"type": typ}, nil
+	default:
+		return nil, fmt.Errorf("unsupported output_config.format.type %q for openai_chat", typ)
 	}
 }
 

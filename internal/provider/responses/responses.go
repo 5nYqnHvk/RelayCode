@@ -565,6 +565,7 @@ type inputItem struct {
 	Name    string             `json:"name,omitempty"`
 	CallID  string             `json:"call_id,omitempty"`
 	Args    string             `json:"arguments,omitempty"`
+	Input   string             `json:"input,omitempty"`
 	Output  string             `json:"output,omitempty"`
 }
 
@@ -577,8 +578,9 @@ type toolDecl struct {
 	Type              string          `json:"type"`
 	Name              string          `json:"name,omitempty"`
 	Description       string          `json:"description,omitempty"`
-	Strict            bool            `json:"strict"`
+	Strict            *bool           `json:"strict,omitempty"`
 	Parameters        json.RawMessage `json:"parameters,omitempty"`
+	Format            map[string]any  `json:"format,omitempty"`
 	ExternalWebAccess *bool           `json:"external_web_access,omitempty"`
 }
 
@@ -601,7 +603,10 @@ func buildRequestWithNormalizer(
 	passthroughServerTools bool,
 	normalize func([]anthropic.Message, bool, bool) []anthropic.Message,
 ) (map[string]any, map[string]map[string]string, error) {
-	items, err := convertMessagesToItems(normalize(r.Messages, passthroughServerTools, r.HasToolSearchBeta()), passthroughServerTools)
+	if fields := r.UnsupportedOpenAIFields(); len(fields) > 0 {
+		return nil, nil, fmt.Errorf("openai_responses does not support Anthropic-only fields: %s", strings.Join(fields, ", "))
+	}
+	items, err := convertMessagesToItems(normalize(r.Messages, passthroughServerTools, r.HasToolSearchBeta()), passthroughServerTools, responsesCustomToolNames(r.Tools, passthroughServerTools))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -617,7 +622,10 @@ func buildRequestWithNormalizer(
 	if sysText = responsesInstructions(sysText, len(anthropic.ToolsForUpstream(r.Tools, passthroughServerTools)) > 0 && !isToolChoiceNone(r.ToolChoice)); sysText != "" {
 		body["instructions"] = sysText
 	}
-	aliases := applyCommonFields(body, r, passthroughServerTools)
+	aliases, err := applyCommonFields(body, r, passthroughServerTools)
+	if err != nil {
+		return nil, nil, err
+	}
 	return body, aliases, nil
 }
 
@@ -627,7 +635,7 @@ func responsesInstructions(sysText string, hasTools bool) string {
 	return provider.InstructionsWithToolUseBridge(sysText, hasTools)
 }
 
-func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughServerTools bool) map[string]map[string]string {
+func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughServerTools bool) (map[string]map[string]string, error) {
 	aliases := map[string]map[string]string{}
 	if r.MaxTokens > 0 {
 		body["max_output_tokens"] = r.MaxTokens
@@ -639,34 +647,56 @@ func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughSer
 		body["reasoning"] = map[string]any{"effort": effort}
 		body["include"] = []string{"reasoning.encrypted_content"}
 	}
-	if text := responsesTextFormat(r); text != nil {
+	text, err := responsesTextFormat(r)
+	if err != nil {
+		return nil, err
+	}
+	if text != nil {
 		body["text"] = text
 	}
 	// Match openai/codex HTTP request shape: tool_choice and parallel_tool_calls
 	// are always present; keep parallel calls disabled for Claude Code tools.
-	body["tool_choice"] = responsesToolChoice(r.ToolChoice)
 	body["parallel_tool_calls"] = false
 	if _, set := body["store"]; !set {
 		body["store"] = false
 	}
+	toolKinds := map[string]string{}
 	if len(r.Tools) > 0 {
 		upstreamTools := anthropic.ToolsForUpstream(r.Tools, passthroughServerTools)
 		if len(upstreamTools) > 0 {
 			tools := make([]toolDecl, 0, len(upstreamTools))
 			for _, t := range upstreamTools {
+				kind := responsesToolKind(t)
+				toolKinds[t.Name] = kind
 				params, toolAliases := toolargs.SanitizeParameters(t.InputSchema)
 				if len(toolAliases) > 0 {
 					aliases[t.Name] = toolAliases
 				}
-				tools = append(tools, toResponsesToolDecl(t, params))
+				tools = append(tools, toResponsesToolDecl(t, kind, params))
 			}
 			body["tools"] = tools
 		}
 	}
-	return aliases
+	body["tool_choice"] = responsesToolChoice(r.ToolChoice, toolKinds)
+	return aliases, nil
 }
 
-func toResponsesToolDecl(t anthropic.Tool, params json.RawMessage) toolDecl {
+func responsesToolKind(t anthropic.Tool) string {
+	if t.Type == "custom" && len(t.InputSchema) == 0 {
+		return "custom"
+	}
+	return "function"
+}
+
+func toResponsesToolDecl(t anthropic.Tool, kind string, params json.RawMessage) toolDecl {
+	if kind == "custom" {
+		return toolDecl{
+			Type:        "custom",
+			Name:        t.Name,
+			Description: t.Description,
+			Format:      map[string]any{"type": "text"},
+		}
+	}
 	strict := false
 	if t.Strict != nil {
 		strict = *t.Strict
@@ -675,9 +705,19 @@ func toResponsesToolDecl(t anthropic.Tool, params json.RawMessage) toolDecl {
 		Type:        "function",
 		Name:        t.Name,
 		Description: t.Description,
-		Strict:      strict,
+		Strict:      &strict,
 		Parameters:  params,
 	}
+}
+
+func customToolInput(args string) string {
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(args), &obj); err == nil {
+		if input, ok := obj["input"].(string); ok && len(obj) == 1 {
+			return input
+		}
+	}
+	return args
 }
 
 func isToolChoiceNone(raw json.RawMessage) bool {
@@ -693,7 +733,7 @@ func isToolChoiceNone(raw json.RawMessage) bool {
 	return choice.Type == "none"
 }
 
-func responsesToolChoice(raw json.RawMessage) any {
+func responsesToolChoice(raw json.RawMessage, toolKinds map[string]string) any {
 	if len(raw) == 0 {
 		return "auto"
 	}
@@ -713,31 +753,36 @@ func responsesToolChoice(raw json.RawMessage) any {
 		return "none"
 	case "tool":
 		if choice.Name != "" {
-			return map[string]any{"type": "function", "name": choice.Name}
+			kind := toolKinds[choice.Name]
+			if kind == "" {
+				kind = "function"
+			}
+			return map[string]any{"type": kind, "name": choice.Name}
 		}
 	}
 	return "auto"
 }
 
-func responsesTextFormat(r *anthropic.Request) any {
+func responsesTextFormat(r *anthropic.Request) (any, error) {
 	if r == nil || r.OutputConfig == nil {
-		return nil
+		return nil, nil
 	}
 	format := r.OutputConfig.RawField("format")
 	if len(format) == 0 {
-		return nil
+		return nil, nil
 	}
 	var f map[string]any
 	if err := json.Unmarshal(format, &f); err != nil {
-		return nil
+		return nil, fmt.Errorf("output_config.format: %w", err)
 	}
 	typ, _ := f["type"].(string)
 	if typ == "" {
-		return nil
+		return nil, fmt.Errorf("output_config.format.type is required")
 	}
-	if typ == "json_schema" {
+	switch typ {
+	case "json_schema":
 		if _, ok := f["schema"]; !ok {
-			return nil
+			return nil, fmt.Errorf("output_config.format.schema is required for json_schema")
 		}
 		if _, ok := f["strict"]; !ok {
 			f["strict"] = true
@@ -745,12 +790,26 @@ func responsesTextFormat(r *anthropic.Request) any {
 		if name, _ := f["name"].(string); name == "" {
 			f["name"] = "relaycode_output_schema"
 		}
+	case "text", "json_object":
+	default:
+		return nil, fmt.Errorf("unsupported output_config.format.type %q for openai_responses", typ)
 	}
-	return map[string]any{"format": f}
+	return map[string]any{"format": f}, nil
 }
 
-func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools bool) ([]inputItem, error) {
+func responsesCustomToolNames(tools []anthropic.Tool, passthroughServerTools bool) map[string]bool {
+	out := map[string]bool{}
+	for _, tool := range anthropic.ToolsForUpstream(tools, passthroughServerTools) {
+		if responsesToolKind(tool) == "custom" && tool.Name != "" {
+			out[tool.Name] = true
+		}
+	}
+	return out
+}
+
+func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools bool, customToolNames map[string]bool) ([]inputItem, error) {
 	var out []inputItem
+	callKinds := map[string]string{}
 	for _, m := range msgs {
 		blocks := anthropic.BlocksForUpstream(m.Content.AsBlocks(), passthroughServerTools)
 		switch m.Role {
@@ -775,8 +834,12 @@ func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools boo
 					if err != nil {
 						return nil, err
 					}
+					itemType := "function_call_output"
+					if callKinds[b.ToolUseID] == "custom" {
+						itemType = "custom_tool_call_output"
+					}
 					out = append(out, inputItem{
-						Type:   "function_call_output",
+						Type:   itemType,
 						CallID: b.ToolUseID,
 						Output: text,
 					})
@@ -814,12 +877,16 @@ func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools boo
 					if len(b.Input) > 0 {
 						args = string(b.Input)
 					}
-					pendingCalls = append(pendingCalls, inputItem{
-						Type:   "function_call",
-						Name:   b.Name,
-						CallID: b.ID,
-						Args:   args,
-					})
+					item := inputItem{Type: "function_call", Name: b.Name, CallID: b.ID, Args: args}
+					if customToolNames[b.Name] {
+						item.Type = "custom_tool_call"
+						item.Args = ""
+						item.Input = customToolInput(args)
+						callKinds[b.ID] = "custom"
+					} else {
+						callKinds[b.ID] = "function"
+					}
+					pendingCalls = append(pendingCalls, item)
 				}
 			}
 			if text := strings.TrimSpace(strings.Join(preText, "\n\n")); text != "" {
