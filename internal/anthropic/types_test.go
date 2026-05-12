@@ -43,18 +43,25 @@ func TestToolsForUpstreamFiltersAnthropicServerToolsByDefault(t *testing.T) {
 	}
 }
 
-func TestStripServerToolBlocks(t *testing.T) {
+func TestBlocksForUpstreamDegradesServerToolBlocks(t *testing.T) {
 	blocks := []Block{
 		{Type: "text", Text: "keep"},
-		{Type: "server_tool_use", Name: "web_search"},
-		{Type: "web_search_tool_result"},
+		{Type: "server_tool_use", ID: "srv_1", Name: "web_search", Input: json.RawMessage(`{"query":"relaycode"}`)},
+		{Type: "web_search_tool_result", ToolUseID: "srv_1", Content: json.RawMessage(`"result"`)},
 		{Type: "tool_use", Name: "bash"},
 	}
 
 	got := BlocksForUpstream(blocks, false)
-	want := []Block{{Type: "text", Text: "keep"}, {Type: "tool_use", Name: "bash"}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("BlocksForUpstream(false) = %+v, want %+v", got, want)
+	if len(got) != 4 || got[0].Text != "keep" || got[3].Type != "tool_use" {
+		t.Fatalf("BlocksForUpstream(false) = %+v", got)
+	}
+	if got[1].Type != "text" || !strings.Contains(got[1].Text, "web_search") || !strings.Contains(got[2].Text, "result") {
+		t.Fatalf("server history not degraded: %+v", got)
+	}
+	stripped := StripServerToolBlocks(blocks)
+	wantStripped := []Block{{Type: "text", Text: "keep"}, {Type: "tool_use", Name: "bash"}}
+	if !reflect.DeepEqual(stripped, wantStripped) {
+		t.Fatalf("StripServerToolBlocks = %+v, want %+v", stripped, wantStripped)
 	}
 	if got := BlocksForUpstream(blocks, true); !reflect.DeepEqual(got, blocks) {
 		t.Fatalf("BlocksForUpstream(true) = %+v, want %+v", got, blocks)

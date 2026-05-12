@@ -189,6 +189,20 @@ func (r *Request) HasToolSearchBeta() bool {
 	return false
 }
 
+func (r *Request) UnsupportedOpenAIFields() []string {
+	if r == nil {
+		return nil
+	}
+	var fields []string
+	if len(r.ContextManagement) > 0 {
+		fields = append(fields, "context_management")
+	}
+	for key := range r.ExtraFields {
+		fields = append(fields, key)
+	}
+	return fields
+}
+
 // Message is one turn in the conversation.
 type Message struct {
 	Role    string  `json:"role"`
@@ -356,7 +370,48 @@ func BlocksForUpstream(blocks []Block, passthroughServerTools bool) []Block {
 	if passthroughServerTools {
 		return blocks
 	}
-	return StripServerToolBlocks(blocks)
+	return DegradeServerToolBlocks(blocks)
+}
+
+func DegradeServerToolBlocks(blocks []Block) []Block {
+	if len(blocks) == 0 {
+		return blocks
+	}
+	out := make([]Block, 0, len(blocks))
+	for _, b := range blocks {
+		if !IsServerToolBlock(b) {
+			out = append(out, b)
+			continue
+		}
+		out = append(out, Block{Type: "text", Text: serverToolSummary(b)})
+	}
+	return out
+}
+
+func serverToolSummary(b Block) string {
+	name := b.Name
+	if name == "" {
+		name = b.Type
+	}
+	id := b.ID
+	if id == "" {
+		id = b.ToolUseID
+	}
+	var detail string
+	if len(b.Input) > 0 {
+		detail = string(b.Input)
+	} else if len(b.Content) > 0 {
+		text, err := ToolResultText(b.Content)
+		if err == nil {
+			detail = text
+		} else {
+			detail = string(b.Content)
+		}
+	}
+	if detail != "" {
+		return fmt.Sprintf("[Anthropic server/MCP tool history preserved: %s id=%s detail=%s]", name, id, detail)
+	}
+	return fmt.Sprintf("[Anthropic server/MCP tool history preserved: %s id=%s]", name, id)
 }
 
 // NormalizeMessagesForUpstream applies the defensive transcript repairs Claude
@@ -389,7 +444,7 @@ func NormalizePreviousResponseTail(messages []Message, preserveServerTools, pres
 			blocks = stripToolSearchOnlyFields(blocks)
 		}
 		if !preserveServerTools {
-			blocks = StripServerToolBlocks(blocks)
+			blocks = DegradeServerToolBlocks(blocks)
 		}
 		if len(blocks) == 0 && m.Role == "user" {
 			continue
@@ -446,7 +501,7 @@ func ensureToolResultPairing(messages []Message, preserveServerTools, preserveTo
 			blocks = stripToolSearchOnlyFields(blocks)
 		}
 		if !preserveServerTools {
-			blocks = StripServerToolBlocks(blocks)
+			blocks = DegradeServerToolBlocks(blocks)
 		}
 
 		if m.Role != "assistant" {
@@ -497,7 +552,7 @@ func ensureToolResultPairing(messages []Message, preserveServerTools, preserveTo
 				nextBlocks = stripToolSearchOnlyFields(nextBlocks)
 			}
 			if !preserveServerTools {
-				nextBlocks = StripServerToolBlocks(nextBlocks)
+				nextBlocks = DegradeServerToolBlocks(nextBlocks)
 			}
 			existing = toolResultIDs(nextBlocks)
 		}
