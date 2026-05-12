@@ -304,6 +304,9 @@ func normalizeBlock(b anthropic.Block) map[string]any {
 	if len(b.Input) > 0 {
 		m["input"] = json.RawMessage(b.Input)
 	}
+	if len(b.Caller) > 0 {
+		m["caller"] = json.RawMessage(b.Caller)
+	}
 	if b.ToolUseID != "" {
 		m["tool_use_id"] = b.ToolUseID
 	}
@@ -322,10 +325,16 @@ func hashTools(tools []anthropic.Tool) (string, error) {
 	}
 	items := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
+		var strict any
+		if t.Strict != nil {
+			strict = *t.Strict
+		}
 		items = append(items, map[string]any{
+			"type":         t.Type,
 			"name":         t.Name,
 			"description":  t.Description,
 			"input_schema": json.RawMessage(t.InputSchema),
+			"strict":       strict,
 		})
 	}
 	buf, err := canonicalJSON(items)
