@@ -62,18 +62,16 @@ Observed token/cost behavior from that run:
 | Claude Code tool-compatibility test | ~40 requests for about $2-$3 |
 | Metrics tracked | request count, cost, input/output tokens, cache read/write |
 
-Real RelayCode log from one session (abbreviated, showing `cache_miss` on the
-first turn and `cache_hit` on every turn after — `cached_tokens` grows with the
-shared prefix while only the delta is billed as new input):
+Real RelayCode log from one session (abbreviated, showing the first full replay
+and later upstream cache hits via `cached_tokens`; when experimental
+`previous_response_id` is enabled, cache reuse appears as `session_chain`):
 
 ```text
-responses: cache_miss provider=custom_provider_responses model=gpt-5.5 input_tokens=24871 output_tokens=147
-responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=24576 input_tokens=24994 output_tokens=43
-responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=24576 input_tokens=25059 output_tokens=24
-responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=26624 input_tokens=26946 output_tokens=69
-responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=53760 input_tokens=53913 output_tokens=50
-responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=67584 input_tokens=68153 output_tokens=452
-responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=69120 input_tokens=69514 output_tokens=48
+responses: full_replay provider=custom_provider_responses model=gpt-5.5 reason="codex-compatible http replay" prompt_cache=miss cached_tokens=0 input_tokens=24871 output_tokens=147 stop_reason=end_turn resp=resp_...
+responses: full_replay provider=custom_provider_responses model=gpt-5.5 reason="codex-compatible http replay" prompt_cache=hit cached_tokens=24576 input_tokens=24994 output_tokens=43 stop_reason=tool_use resp=resp_...
+responses: full_replay provider=custom_provider_responses model=gpt-5.5 reason="codex-compatible http replay" prompt_cache=hit cached_tokens=24576 input_tokens=25059 output_tokens=24 stop_reason=tool_use resp=resp_...
+responses: full_replay provider=custom_provider_responses model=gpt-5.5 reason="codex-compatible http replay" prompt_cache=hit cached_tokens=26624 input_tokens=26946 output_tokens=69 stop_reason=end_turn resp=resp_...
+responses: session_chain provider=custom_provider_responses model=gpt-5.5 prev=resp_... tail_messages=1 total_messages=12 cached_tokens=0 input_tokens=1119 output_tokens=30 stop_reason=end_turn resp=resp_...
 ```
 
 Those numbers are workload/provider dependent, but the pattern is the point:
@@ -455,9 +453,10 @@ normal Anthropic endpoint.
 
 ## Troubleshooting
 
-- **`cache_miss` every turn.** Client is not sending
-  `metadata.user_id.session_id`. Either upgrade the Claude Code client, or
-  expect prefix reuse to fall back to instructions+tools fingerprint only.
+- **`prompt_cache=miss` every turn.** Client may not be sending
+  `metadata.user_id.session_id`, or upstream may not be honoring
+  `prompt_cache_key`. Without a session id, RelayCode falls back to
+  instructions/tools fingerprint when available.
 - **`401`/`403` from upstream.** API key is missing or wrong. Check the env
   var referenced in `relaycode.yaml`.
 - **`429` from upstream.** Set `providers.<name>.max_retries` and
