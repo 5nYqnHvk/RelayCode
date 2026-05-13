@@ -114,7 +114,7 @@ ship the `relaycode` binary, `relaycode.example.yaml`, `README.md`, and
 Linux / macOS:
 
 ```bash
-VERSION=1.1.1
+VERSION=1.2.0
 curl -L -o relaycode.tar.gz \
   "https://github.com/5nYqnHvk/RelayCode/releases/download/${VERSION}/relaycode-${VERSION}-linux-amd64.tar.gz"
 tar -xzf relaycode.tar.gz
