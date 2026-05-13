@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -30,6 +31,10 @@ func (w *recordResponseWriter) WriteHeader(statusCode int)  {}
 func (w *recordResponseWriter) Flush()                      {}
 
 func TestStreamPassesBetasHeaderAndBodyFields(t *testing.T) {
+	stream, err := os.ReadFile("testdata/passthrough/upstream.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
 	var betaHeader string
 	var requestBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -37,7 +42,7 @@ func TestStreamPassesBetasHeaderAndBodyFields(t *testing.T) {
 		raw, _ := io.ReadAll(r.Body)
 		requestBody = string(raw)
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("event: message_stop\n" + `data: {"type":"message_stop"}` + "\n\n"))
+		_, _ = w.Write(stream)
 	}))
 	defer server.Close()
 

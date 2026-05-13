@@ -1,0 +1,24 @@
+{
+  "name": "done-only function call",
+  "request": {
+    "messages": [
+      {"role": "user", "content": "call tool"}
+    ],
+    "tools": [
+      {
+        "name": "NotionLike",
+        "input_schema": {"type":"object","properties":{"type":{"type":"string"}},"required":["type"]}
+      }
+    ]
+  },
+  "want_body": {
+    "tool_type": "function",
+    "tool_name": "NotionLike"
+  },
+  "want_output": [
+    "\"type\":\"tool_use\"",
+    "\"name\":\"NotionLike\"",
+    "\"partial_json\":\"{\\\"type\\\":\\\"page\\\"}\"",
+    "\"stop_reason\":\"tool_use\""
+  ]
+}

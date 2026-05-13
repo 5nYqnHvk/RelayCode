@@ -1,0 +1,6 @@
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"fc_fixture_2","type":"function_call","call_id":"call_fixture_2","name":"NotionLike","arguments":"{\"_fcc_arg_type\":\"page\"}"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_fixture_4","usage":{"input_tokens":1,"output_tokens":2},"output":[{"type":"function_call"}]}}
+

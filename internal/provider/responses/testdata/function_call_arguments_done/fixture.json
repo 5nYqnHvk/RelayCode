@@ -1,0 +1,24 @@
+{
+  "name": "function call arguments done",
+  "request": {
+    "messages": [
+      {"role": "user", "content": "read"}
+    ],
+    "tools": [
+      {
+        "name": "Read",
+        "input_schema": {"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}
+      }
+    ]
+  },
+  "want_body": {
+    "tool_type": "function",
+    "tool_name": "Read"
+  },
+  "want_output": [
+    "\"type\":\"tool_use\"",
+    "\"name\":\"Read\"",
+    "\"partial_json\":\"{\\\"file_path\\\":\\\"/tmp/x\\\"}\"",
+    "\"stop_reason\":\"tool_use\""
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "name": "previous response id chain",
+  "config": {
+    "experimental_previous_response_id": true
+  },
+  "streams": [
+    "turn1_upstream.sse",
+    "turn2_upstream.sse",
+    "turn3_upstream.sse"
+  ],
+  "requests": [
+    {
+      "messages": [
+        {"role": "user", "content": "first"}
+      ]
+    },
+    {
+      "messages": [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": [
+          {"type": "text", "text": "reply"},
+          {"type": "tool_use", "id": "call_1", "name": "Read", "input": {"file_path": "/tmp/a"}}
+        ]},
+        {"role": "user", "content": [
+          {"type": "tool_result", "tool_use_id": "call_1", "content": "ok 1"}
+        ]}
+      ]
+    },
+    {
+      "messages": [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": [
+          {"type": "text", "text": "reply"},
+          {"type": "tool_use", "id": "call_1", "name": "Read", "input": {"file_path": "/tmp/a"}}
+        ]},
+        {"role": "user", "content": [
+          {"type": "tool_result", "tool_use_id": "call_1", "content": "ok 1"}
+        ]},
+        {"role": "assistant", "content": [
+          {"type": "text", "text": "next"},
+          {"type": "tool_use", "id": "call_2", "name": "Read", "input": {"file_path": "/tmp/b"}}
+        ]},
+        {"role": "user", "content": [
+          {"type": "tool_result", "tool_use_id": "call_2", "content": "ok 2"}
+        ]}
+      ]
+    }
+  ],
+  "want_bodies": [
+    {
+      "previous_response_id_absent": true,
+      "store": true
+    },
+    {
+      "previous_response_id": "resp_fixture_6",
+      "store": true,
+      "input_len": 1,
+      "tail_function_output": {"call_id": "call_1", "output": "ok 1"}
+    },
+    {
+      "previous_response_id": "resp_fixture_7",
+      "store": true,
+      "input_len": 1,
+      "tail_function_output": {"call_id": "call_2", "output": "ok 2"}
+    }
+  ]
+}

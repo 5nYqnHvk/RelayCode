@@ -1,0 +1,18 @@
+{
+  "name": "text reasoning and cache key",
+  "request": {
+    "metadata": {"user_id":"{\"session_id\":\"sess_fixture_1\"}"},
+    "messages": [
+      {"role": "user", "content": "hello"}
+    ],
+    "output_config": {"effort": "high"}
+  },
+  "want_body": {
+    "prompt_cache_key": "sess_fixture_1",
+    "reasoning": true
+  },
+  "want_output": [
+    "\"type\":\"thinking_delta\"",
+    "\"text\":\"answer\""
+  ]
+}

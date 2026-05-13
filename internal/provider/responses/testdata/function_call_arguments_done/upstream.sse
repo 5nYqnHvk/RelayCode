@@ -1,0 +1,9 @@
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"id":"fc_fixture_1","type":"function_call","call_id":"call_fixture_1","name":"Read"}}
+
+event: response.function_call_arguments.done
+data: {"type":"response.function_call_arguments.done","item_id":"fc_fixture_1","arguments":"{\"file_path\":\"/tmp/x\"}"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_fixture_3","usage":{"input_tokens":1,"output_tokens":2}}}
+

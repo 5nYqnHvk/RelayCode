@@ -1,0 +1,12 @@
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"id":"ctc_fixture_1","type":"custom_tool_call","call_id":"call_fixture_1","name":"apply_patch"}}
+
+event: response.custom_tool_call_input.delta
+data: {"type":"response.custom_tool_call_input.delta","item_id":"ctc_fixture_1","call_id":"call_fixture_1","delta":"*** Begin"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"ctc_fixture_1","type":"custom_tool_call","call_id":"call_fixture_1","name":"apply_patch"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_fixture_2","usage":{"input_tokens":1,"output_tokens":1}}}
+

@@ -1,0 +1,6 @@
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_fixture_1","type":"function","function":{"name":"Read","arguments":"{\"file_path\":"}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"/tmp/x\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+

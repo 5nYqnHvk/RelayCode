@@ -1,0 +1,9 @@
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":"think"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"answer"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_fixture_1","usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":8}}}}
+

@@ -1,0 +1,20 @@
+{
+  "name": "custom tool call",
+  "request": {
+    "messages": [
+      {"role": "user", "content": "patch"}
+    ],
+    "tools": [
+      {"name": "apply_patch", "type": "custom"}
+    ]
+  },
+  "want_body": {
+    "tool_type": "custom",
+    "tool_name": "apply_patch"
+  },
+  "want_output": [
+    "\"type\":\"tool_use\"",
+    "\"name\":\"apply_patch\"",
+    "\"partial_json\":\"{\\\"input\\\":\\\"*** Begin\\\"}\""
+  ]
+}
