@@ -670,7 +670,7 @@ func TestBuildRequestCompactsToolResultsWhenEnabled(t *testing.T) {
 		{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_result", ToolUseID: "call_1", Content: raw}}}},
 	}}
 
-	body, _, err := buildRequestWithOptions(req, "gpt", true, true)
+	body, _, err := buildRequestWithOptions(req, "gpt", true, true, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -705,6 +705,37 @@ func TestBuildRequestReplaysCustomToolCallAndOutput(t *testing.T) {
 	}
 	if items[1].Type != "custom_tool_call_output" || items[1].Output != "ok" {
 		t.Fatalf("custom output item = %+v", items[1])
+	}
+}
+
+func TestBuildRequestUsesFunctionModeForCustomTools(t *testing.T) {
+	req := &anthropic.Request{
+		Tools: []anthropic.Tool{{Name: "apply_patch", Type: "custom"}},
+		Messages: []anthropic.Message{
+			{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_use", ID: "call_1", Name: "apply_patch", Input: json.RawMessage(`{"input":"*** Begin"}`)}}}},
+			{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_result", ToolUseID: "call_1", Content: json.RawMessage(`"ok"`)}}}},
+		},
+	}
+	body, _, err := buildRequestWithOptions(req, "gpt", false, false, "function")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := body["tools"].([]toolDecl)
+	if len(tools) != 1 || tools[0].Type != "function" || tools[0].Name != "apply_patch" || !*tools[0].Strict {
+		t.Fatalf("tools = %+v", tools)
+	}
+	if !strings.Contains(string(tools[0].Parameters), `"input"`) {
+		t.Fatalf("parameters = %s", tools[0].Parameters)
+	}
+	items := body["input"].([]inputItem)
+	if len(items) != 2 {
+		t.Fatalf("input = %+v", items)
+	}
+	if items[0].Type != "function_call" || items[0].Args != `{"input":"*** Begin"}` {
+		t.Fatalf("function-mode call item = %+v", items[0])
+	}
+	if items[1].Type != "function_call_output" || items[1].Output != "ok" {
+		t.Fatalf("function-mode output item = %+v", items[1])
 	}
 }
 

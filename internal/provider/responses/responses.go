@@ -115,10 +115,11 @@ func (a *Adapter) streamOnce(
 
 	var body map[string]any
 	var aliases map[string]map[string]string
+	mode := responsesCustomToolMode(a.pc.ResponsesCustomToolMode)
 	if chained {
-		body, aliases, err = buildTailRequestWithOptions(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools, a.pc.CompactToolResults)
+		body, aliases, err = buildTailRequestWithOptions(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools, a.pc.CompactToolResults, mode)
 	} else {
-		body, aliases, err = buildRequestWithOptions(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools, a.pc.CompactToolResults)
+		body, aliases, err = buildRequestWithOptions(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools, a.pc.CompactToolResults, mode)
 	}
 	if err != nil {
 		return err
@@ -641,19 +642,19 @@ func buildRequest(r *anthropic.Request, model string, passthroughServerTools boo
 }
 
 func buildRequestWithAliases(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, map[string]map[string]string, error) {
-	return buildRequestWithOptions(r, model, passthroughServerTools, false)
+	return buildRequestWithOptions(r, model, passthroughServerTools, false, "")
 }
 
-func buildRequestWithOptions(r *anthropic.Request, model string, passthroughServerTools, compactToolResults bool) (map[string]any, map[string]map[string]string, error) {
-	return buildRequestWithNormalizer(r, model, passthroughServerTools, compactToolResults, anthropic.NormalizeMessagesForUpstream)
+func buildRequestWithOptions(r *anthropic.Request, model string, passthroughServerTools, compactToolResults bool, customToolMode string) (map[string]any, map[string]map[string]string, error) {
+	return buildRequestWithNormalizer(r, model, passthroughServerTools, compactToolResults, responsesCustomToolMode(customToolMode), anthropic.NormalizeMessagesForUpstream)
 }
 
 func buildTailRequestWithAliases(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, map[string]map[string]string, error) {
-	return buildTailRequestWithOptions(r, model, passthroughServerTools, false)
+	return buildTailRequestWithOptions(r, model, passthroughServerTools, false, "")
 }
 
-func buildTailRequestWithOptions(r *anthropic.Request, model string, passthroughServerTools, compactToolResults bool) (map[string]any, map[string]map[string]string, error) {
-	return buildRequestWithNormalizer(r, model, passthroughServerTools, compactToolResults, anthropic.NormalizePreviousResponseTail)
+func buildTailRequestWithOptions(r *anthropic.Request, model string, passthroughServerTools, compactToolResults bool, customToolMode string) (map[string]any, map[string]map[string]string, error) {
+	return buildRequestWithNormalizer(r, model, passthroughServerTools, compactToolResults, responsesCustomToolMode(customToolMode), anthropic.NormalizePreviousResponseTail)
 }
 
 func buildRequestWithNormalizer(
@@ -661,12 +662,19 @@ func buildRequestWithNormalizer(
 	model string,
 	passthroughServerTools bool,
 	compactToolResults bool,
+	customToolMode string,
 	normalize func([]anthropic.Message, bool, bool) []anthropic.Message,
 ) (map[string]any, map[string]map[string]string, error) {
 	if fields := r.UnsupportedOpenAIFields(); len(fields) > 0 {
 		return nil, nil, fmt.Errorf("openai_responses does not support Anthropic-only fields: %s", strings.Join(fields, ", "))
 	}
-	items, err := convertMessagesToItems(normalize(r.Messages, passthroughServerTools, r.HasToolSearchBeta()), passthroughServerTools, responsesCustomToolNames(r.Tools, passthroughServerTools), compactToolResults)
+	items, err := convertMessagesToItems(
+		normalize(r.Messages, passthroughServerTools, r.HasToolSearchBeta()),
+		passthroughServerTools,
+		responsesCustomToolNames(r.Tools, passthroughServerTools, customToolMode),
+		responsesFunctionModeCustomToolNames(r.Tools, passthroughServerTools, customToolMode),
+		compactToolResults,
+	)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -682,7 +690,7 @@ func buildRequestWithNormalizer(
 	if sysText = responsesInstructions(sysText, len(anthropic.ToolsForUpstream(r.Tools, passthroughServerTools)) > 0 && !isToolChoiceNone(r.ToolChoice)); sysText != "" {
 		body["instructions"] = sysText
 	}
-	aliases, err := applyCommonFields(body, r, passthroughServerTools)
+	aliases, err := applyCommonFields(body, r, passthroughServerTools, customToolMode)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -695,7 +703,7 @@ func responsesInstructions(sysText string, hasTools bool) string {
 	return provider.InstructionsWithToolUseBridge(sysText, hasTools)
 }
 
-func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughServerTools bool) (map[string]map[string]string, error) {
+func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughServerTools bool, customToolMode string) (map[string]map[string]string, error) {
 	aliases := map[string]map[string]string{}
 	if r.MaxTokens > 0 {
 		body["max_output_tokens"] = r.MaxTokens
@@ -726,13 +734,13 @@ func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughSer
 		if len(upstreamTools) > 0 {
 			tools := make([]toolDecl, 0, len(upstreamTools))
 			for _, t := range upstreamTools {
-				kind := responsesToolKind(t)
+				kind := responsesToolKind(t, customToolMode)
 				toolKinds[t.Name] = kind
 				params, toolAliases := toolargs.SanitizeParameters(t.InputSchema)
 				if len(toolAliases) > 0 {
 					aliases[t.Name] = toolAliases
 				}
-				tools = append(tools, toResponsesToolDecl(t, kind, params))
+				tools = append(tools, toResponsesToolDecl(t, kind, params, customToolMode))
 			}
 			body["tools"] = tools
 		}
@@ -741,14 +749,21 @@ func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughSer
 	return aliases, nil
 }
 
-func responsesToolKind(t anthropic.Tool) string {
-	if t.Type == "custom" && len(t.InputSchema) == 0 {
+func responsesCustomToolMode(mode string) string {
+	if mode == "function" {
+		return "function"
+	}
+	return "native"
+}
+
+func responsesToolKind(t anthropic.Tool, customToolMode string) string {
+	if t.Type == "custom" && len(t.InputSchema) == 0 && customToolMode != "function" {
 		return "custom"
 	}
 	return "function"
 }
 
-func toResponsesToolDecl(t anthropic.Tool, kind string, params json.RawMessage) toolDecl {
+func toResponsesToolDecl(t anthropic.Tool, kind string, params json.RawMessage, customToolMode string) toolDecl {
 	if kind == "custom" {
 		return toolDecl{
 			Type:        "custom",
@@ -760,6 +775,10 @@ func toResponsesToolDecl(t anthropic.Tool, kind string, params json.RawMessage) 
 	strict := false
 	if t.Strict != nil {
 		strict = *t.Strict
+	}
+	if t.Type == "custom" && len(t.InputSchema) == 0 && customToolMode == "function" {
+		strict = true
+		params = json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false}`)
 	}
 	return toolDecl{
 		Type:        "function",
@@ -778,6 +797,15 @@ func customToolInput(args string) string {
 		}
 	}
 	return args
+}
+
+func functionModeCustomArgs(args string) string {
+	raw := customToolInput(args)
+	out, err := json.Marshal(map[string]string{"input": raw})
+	if err != nil {
+		return `{"input":""}`
+	}
+	return string(out)
 }
 
 func isToolChoiceNone(raw json.RawMessage) bool {
@@ -857,17 +885,30 @@ func responsesTextFormat(r *anthropic.Request) (any, error) {
 	return map[string]any{"format": f}, nil
 }
 
-func responsesCustomToolNames(tools []anthropic.Tool, passthroughServerTools bool) map[string]bool {
+func responsesCustomToolNames(tools []anthropic.Tool, passthroughServerTools bool, customToolMode string) map[string]bool {
 	out := map[string]bool{}
 	for _, tool := range anthropic.ToolsForUpstream(tools, passthroughServerTools) {
-		if responsesToolKind(tool) == "custom" && tool.Name != "" {
+		if responsesToolKind(tool, customToolMode) == "custom" && tool.Name != "" {
 			out[tool.Name] = true
 		}
 	}
 	return out
 }
 
-func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools bool, customToolNames map[string]bool, compactToolResults bool) ([]inputItem, error) {
+func responsesFunctionModeCustomToolNames(tools []anthropic.Tool, passthroughServerTools bool, customToolMode string) map[string]bool {
+	out := map[string]bool{}
+	if customToolMode != "function" {
+		return out
+	}
+	for _, tool := range anthropic.ToolsForUpstream(tools, passthroughServerTools) {
+		if tool.Type == "custom" && len(tool.InputSchema) == 0 && tool.Name != "" {
+			out[tool.Name] = true
+		}
+	}
+	return out
+}
+
+func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools bool, customToolNames, functionCustomToolNames map[string]bool, compactToolResults bool) ([]inputItem, error) {
 	var out []inputItem
 	callKinds := map[string]string{}
 	for _, m := range msgs {
@@ -948,6 +989,9 @@ func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools boo
 						item.Input = customToolInput(args)
 						callKinds[b.ID] = "custom"
 					} else {
+						if functionCustomToolNames[b.Name] {
+							item.Args = functionModeCustomArgs(args)
+						}
 						callKinds[b.ID] = "function"
 					}
 					pendingCalls = append(pendingCalls, item)

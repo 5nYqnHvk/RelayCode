@@ -31,8 +31,9 @@ type responsesFixture struct {
 }
 
 type responsesFixtureConfig struct {
-	ExperimentalPreviousResponseID     bool `json:"experimental_previous_response_id,omitempty"`
-	ExperimentalPassthroughServerTools bool `json:"experimental_passthrough_server_tools,omitempty"`
+	ExperimentalPreviousResponseID     bool   `json:"experimental_previous_response_id,omitempty"`
+	ExperimentalPassthroughServerTools bool   `json:"experimental_passthrough_server_tools,omitempty"`
+	ResponsesCustomToolMode            string `json:"responses_custom_tool_mode,omitempty"`
 }
 
 type responsesFixtureWantBody struct {
@@ -59,6 +60,7 @@ func TestClaudeCodeResponsesFixtures(t *testing.T) {
 		"function_call_arguments_done",
 		"done_only_function_call",
 		"custom_tool_call_input_delta",
+		"custom_tool_function_mode",
 		"captured_function_call_arguments_delta",
 		"captured_bash_tool_arguments_delta",
 		"previous_response_id_chain",
@@ -130,6 +132,7 @@ func runResponsesFixture(t *testing.T, dir string, fixture responsesFixture) {
 			APIKey:                             "key",
 			ExperimentalPreviousResponseID:     fixture.Config.ExperimentalPreviousResponseID,
 			ExperimentalPassthroughServerTools: fixture.Config.ExperimentalPassthroughServerTools,
+			ResponsesCustomToolMode:            fixture.Config.ResponsesCustomToolMode,
 		},
 		client: server.Client(),
 	}

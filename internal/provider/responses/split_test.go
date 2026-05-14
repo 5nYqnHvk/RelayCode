@@ -16,7 +16,7 @@ func TestConvertMessagesToItemsSplitsPostToolText(t *testing.T) {
 			{Type: "text", Text: "after"},
 		}},
 	}}
-	items, err := convertMessagesToItems(req, true, nil, false)
+	items, err := convertMessagesToItems(req, true, nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestConvertMessagesToItemsReplaysMultipleToolResults(t *testing.T) {
 			}},
 		},
 	}
-	items, err := convertMessagesToItems(req, true, nil, false)
+	items, err := convertMessagesToItems(req, true, nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}

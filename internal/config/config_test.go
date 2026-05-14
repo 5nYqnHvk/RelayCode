@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -64,6 +65,7 @@ providers:
     api_key: "${TEST_RELAYCODE_KEY}"
     experimental_passthrough_server_tools: true
     experimental_previous_response_id: true
+    responses_custom_tool_mode: function
     codex_auth_path: /tmp/codex-auth.json
   openai_chat:
     kind: openai_chat
@@ -98,6 +100,7 @@ providers:
 		provider.APIKey != "secret-key" ||
 		!provider.ExperimentalPassthroughServerTools ||
 		!provider.ExperimentalPreviousResponseID ||
+		provider.ResponsesCustomToolMode != "function" ||
 		provider.CodexAuthPath != "/tmp/codex-auth.json" {
 		t.Fatalf("openai_responses provider = %+v", provider)
 	}
@@ -167,5 +170,47 @@ providers:
 
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load returned nil error for unknown provider kind")
+	}
+}
+
+func TestLoadRejectsInvalidResponsesCustomToolMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relaycode.yaml")
+	body := `routes:
+  - match: "*"
+    provider: p
+    model: gpt
+providers:
+  p:
+    kind: openai_responses
+    base_url: https://api.example.com/v1
+    responses_custom_tool_mode: legacy
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "responses_custom_tool_mode") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLoadRejectsResponsesCustomToolModeOutsideResponsesProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relaycode.yaml")
+	body := `routes:
+  - match: "*"
+    provider: p
+    model: gpt
+providers:
+  p:
+    kind: openai_chat
+    base_url: https://api.example.com/v1
+    responses_custom_tool_mode: function
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "only valid for openai_responses") {
+		t.Fatalf("err = %v", err)
 	}
 }

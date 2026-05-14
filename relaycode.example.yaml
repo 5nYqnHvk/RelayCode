@@ -48,6 +48,7 @@ providers:
     # codex_auth_path: /home/you/.codex/auth.json  # mimic Codex ChatGPT auth
     # experimental_previous_response_id: false   # opt into non-Codex HTTP previous_response_id chaining
     # experimental_passthrough_server_tools: true  # pass server tools upstream as-is
+    # responses_custom_tool_mode: native # native|function; function downgrades custom tools for stricter gateways
 
   openai_chat:
     kind: openai_chat                      # POST /v1/chat/completions

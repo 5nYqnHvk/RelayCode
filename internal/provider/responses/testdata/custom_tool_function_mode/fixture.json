@@ -1,0 +1,52 @@
+{
+  "name": "custom tool function mode",
+  "config": {
+    "responses_custom_tool_mode": "function"
+  },
+  "requests": [
+    {
+      "messages": [
+        {"role": "user", "content": "patch"}
+      ],
+      "tools": [
+        {"name": "apply_patch", "type": "custom"}
+      ]
+    },
+    {
+      "messages": [
+        {"role": "user", "content": "patch"},
+        {"role": "assistant", "content": [
+          {"type": "tool_use", "id": "call_fixture_3", "name": "apply_patch", "input": {"input": "*** Begin"}}
+        ]},
+        {"role": "user", "content": [
+          {"type": "tool_result", "tool_use_id": "call_fixture_3", "content": "ok"}
+        ]}
+      ],
+      "tools": [
+        {"name": "apply_patch", "type": "custom"}
+      ]
+    }
+  ],
+  "streams": ["turn1_upstream.sse", "turn2_upstream.sse"],
+  "want_bodies": [
+    {
+      "tool_type": "function",
+      "tool_name": "apply_patch"
+    },
+    {
+      "tool_type": "function",
+      "tool_name": "apply_patch",
+      "tail_function_output": {"call_id": "call_fixture_3", "output": "ok"}
+    }
+  ],
+  "want_outputs": [
+    [
+      "\"type\":\"tool_use\"",
+      "\"name\":\"apply_patch\"",
+      "\"partial_json\":\"{\\\"input\\\":\\\"*** Begin\\\"}\""
+    ],
+    [
+      "event: message_stop"
+    ]
+  ]
+}

@@ -28,6 +28,10 @@ OpenAI Chat and Responses now use explicit structured-output handling: `json_sch
 
 Claude Code base64 image blocks now map to OpenAI Chat `image_url` parts and Responses `input_image` parts. Native Anthropic routes still passthrough the original block shape.
 
+### Provider-Specific Responses Custom Tool Mode
+
+`providers.<name>.responses_custom_tool_mode: function` can downgrade schema-less Anthropic `custom` tools to normal Responses function tools for OpenAI-compatible gateways that reject Responses `custom` declarations. Default `native` keeps OpenAI/Codex-style custom/freeform tools.
+
 ## Remaining Work
 
 ### Codex Namespace Tool Declarations
@@ -40,4 +44,4 @@ Full replay can infer custom output type from prior assistant tool calls. `previ
 
 ### Provider-Specific Responses Drift
 
-Responses custom/freeform shapes can differ across OpenAI-compatible gateways. Keep fixture coverage updated from real Claude Code/OpenAI/Codex traces and gate gateway-specific behavior behind config only when needed.
+Keep fixture coverage updated from real Claude Code/OpenAI/Codex traces and add more config-gated drift behavior only when a target gateway requires it.

@@ -253,6 +253,7 @@ providers:
     # codex_auth_path: /home/you/.codex/auth.json
     # experimental_previous_response_id: false
     # experimental_passthrough_server_tools: true
+    # responses_custom_tool_mode: native # native|function; function downgrades custom tools for stricter gateways
 
   openai_chat:
     kind: openai_chat
@@ -320,6 +321,10 @@ Optional knobs:
 - `experimental_passthrough_server_tools`: passes Anthropic server tool
   declarations upstream instead of stripping unsupported server-tool entries.
   Keep off unless upstream provider understands those tool shapes.
+- `responses_custom_tool_mode: function`: sends schema-less Anthropic custom
+  tools as normal Responses function tools with an `input` string argument for
+  gateways that reject Responses `custom` tool declarations. Default `native`
+  keeps OpenAI/Codex-style custom tools.
 
 ### `openai_chat`
 
