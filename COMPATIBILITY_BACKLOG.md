@@ -24,6 +24,10 @@ OpenAI Chat and Responses now use explicit structured-output handling: `json_sch
 
 `server.responses_session_store_path` enables optional JSON persistence for Responses session metadata and stats. Loaded entries are TTL-pruned and still fall back to full replay when upstream rejects a persisted `previous_response_id`.
 
+### Image Translation
+
+Claude Code base64 image blocks now map to OpenAI Chat `image_url` parts and Responses `input_image` parts. Native Anthropic routes still passthrough the original block shape.
+
 ## Remaining Work
 
 ### Codex Namespace Tool Declarations
@@ -37,7 +41,3 @@ Full replay can infer custom output type from prior assistant tool calls. `previ
 ### Provider-Specific Responses Drift
 
 Responses custom/freeform shapes can differ across OpenAI-compatible gateways. Keep fixture coverage updated from real Claude Code/OpenAI/Codex traces and gate gateway-specific behavior behind config only when needed.
-
-### Image Translation
-
-OpenAI adapters still reject user image blocks. Native Anthropic routes remain the supported path for vision turns until a Responses image mapping is needed.

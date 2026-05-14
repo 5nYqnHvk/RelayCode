@@ -92,6 +92,8 @@ paying full-history cost every request.
   model names, plus required `"*"` fallback.
 - **Streaming translation.** Emits Anthropic SSE lifecycle with text, thinking,
   tool use, tool input deltas, stop reasons, and token counts where available.
+- **Image blocks.** Claude Code base64 image blocks translate to OpenAI Chat
+  `image_url` parts and Responses `input_image` parts.
 - **Responses cache keying.** `openai_responses` sets `prompt_cache_key` from
   Claude Code `metadata.user_id.session_id` when present.
 - **Claude Code fast paths.** Optional local shortcuts for quota probe, command
@@ -348,7 +350,7 @@ Behavior:
 | Thinking/reasoning deltas | Works | Chat reasoning and Responses reasoning events map to `thinking_delta`. |
 | Local `web_search` / `web_fetch` | Optional | Requires `server.enable_web_server_tools: true` and forced Anthropic server tool choice. |
 | Provider-side server tools | Experimental | Use `experimental_passthrough_server_tools` only with compatible upstreams. |
-| Images | Native Anthropic only | OpenAI adapters reject user image blocks. Route vision models through `anthropic_messages`. |
+| Images | Works | Claude Code base64 image blocks map to Chat `image_url` and Responses `input_image`. |
 | MCP/server-tool replay blocks | Stripped by default | Prevents unsupported opaque blocks from breaking OpenAI-compatible upstreams. |
 
 ## Observability
@@ -407,7 +409,7 @@ Debug logging:
 - Responses cache reuse relies on upstream prompt caching via `prompt_cache_key`.
   Optional HTTP `previous_response_id` chaining is experimental; WebSocket
   continuation is not implemented.
-- OpenAI adapters reject user image blocks.
+- OpenAI image support expects Claude Code base64 image blocks; remote image URLs are not fetched by RelayCode.
 - Local web tools run only for forced Anthropic web server tool requests.
 - Retry only applies to transport errors, HTTP 429, and HTTP 5xx before a stream
   is accepted; mid-stream provider failures are returned as Anthropic SSE errors.
@@ -466,8 +468,8 @@ normal Anthropic endpoint.
 - **`429` from upstream.** Set `providers.<name>.max_retries` and
   `max_concurrency` to smooth spikes.
 - **Long requests time out.** Bump `providers.<name>.http_timeout_seconds`.
-- **"image user blocks not supported".** Route vision turns through an
-  `anthropic_messages` provider instead of OpenAI adapters.
+- **Image blocks.** OpenAI adapters now accept Claude Code base64 image blocks.
+  Use native Anthropic only if you want direct passthrough.
 - **Forced `web_search` / `web_fetch` returns 400.** Enable
   `server.enable_web_server_tools: true`. Default is off because the proxy
   makes outbound HTTP.
