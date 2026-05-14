@@ -32,16 +32,18 @@ Claude Code base64 image blocks now map to OpenAI Chat `image_url` parts and Res
 
 `providers.<name>.responses_custom_tool_mode: function` can downgrade schema-less Anthropic `custom` tools to normal Responses function tools for OpenAI-compatible gateways that reject Responses `custom` declarations. Default `native` keeps OpenAI/Codex-style custom/freeform tools.
 
-## Remaining Work
-
 ### Codex Namespace Tool Declarations
 
-RelayCode still does not model full Codex namespace specs for MCP-style tool groups. Future work should add namespace metadata only if it improves real Claude Code / Responses compatibility.
+`providers.<name>.responses_namespace_tools: true` can group `mcp__server__tool` function declarations into Responses `namespace` tools, replay namespace-qualified calls, and map streamed namespaced function calls back to Claude Code's full Anthropic tool names. Default `false` keeps flat function declarations for OpenAI-compatible gateways without namespace support.
 
 ### Stronger Custom Tool Output In Chained Tails
 
-Full replay can infer custom output type from prior assistant tool calls. `previous_response_id` tail-only tool results may still be ambiguous when the prior custom call exists only in upstream state. Future work can persist call-id -> tool-kind metadata if a target Responses backend requires `custom_tool_call_output` in chained tails.
+Responses session entries now persist `call_id -> function|custom` metadata from streamed assistant tool calls. Tail-only `previous_response_id` tool results can therefore emit `custom_tool_call_output` when the matching custom call exists only in upstream state.
 
 ### Provider-Specific Responses Drift
 
-Keep fixture coverage updated from real Claude Code/OpenAI/Codex traces and add more config-gated drift behavior only when a target gateway requires it.
+Fixture coverage now includes namespace tool declarations/streaming and custom-tool previous-response tails, alongside native/function custom-tool modes. Keep adding config-gated drift behavior only when real target gateways require it.
+
+## Remaining Work
+
+No known Claude Code / Codex compatibility backlog items remain in current Go scope.

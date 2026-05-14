@@ -254,6 +254,7 @@ providers:
     # experimental_previous_response_id: false
     # experimental_passthrough_server_tools: true
     # responses_custom_tool_mode: native # native|function; function downgrades custom tools for stricter gateways
+    # responses_namespace_tools: false # group mcp__server__tool declarations as Responses namespace tools
 
   openai_chat:
     kind: openai_chat
@@ -306,7 +307,7 @@ Behavior:
 - Maps Anthropic `tool_choice: {"type":"any"}` to OpenAI `required`.
 - Drops replayed raw Anthropic thinking blocks because Responses API does not
   accept them.
-- Rejects user image blocks.
+- Maps Claude Code base64 image blocks to Responses `input_image` parts.
 
 Optional knobs:
 
@@ -325,6 +326,10 @@ Optional knobs:
   tools as normal Responses function tools with an `input` string argument for
   gateways that reject Responses `custom` tool declarations. Default `native`
   keeps OpenAI/Codex-style custom tools.
+- `responses_namespace_tools: true`: groups MCP-style tool names like
+  `mcp__calendar__create_event` into Responses `namespace` declarations and
+  maps namespace-qualified function calls back to Claude Code's full tool name.
+  Default `false` keeps flat function tools for stricter gateways.
 
 ### `openai_chat`
 
@@ -363,7 +368,9 @@ Behavior:
 | Local `web_search` / `web_fetch` | Optional | Requires `server.enable_web_server_tools: true` and forced Anthropic server tool choice. |
 | Provider-side server tools | Experimental | Use `experimental_passthrough_server_tools` only with compatible upstreams. |
 | Images | Works | Claude Code base64 image blocks map to Chat `image_url` and Responses `input_image`. |
-| MCP/server-tool replay blocks | Stripped by default | Prevents unsupported opaque blocks from breaking OpenAI-compatible upstreams. |
+| MCP/server-tool replay blocks | Degraded by default | Preserves model-visible history as text unless passthrough is enabled. |
+| Responses namespace tools | Optional | `responses_namespace_tools: true` groups `mcp__server__tool` names into Codex-style namespace declarations. |
+| Chained custom tool results | Works | Stored `call_id` metadata lets `previous_response_id` tails emit `custom_tool_call_output`. |
 
 ## Observability
 
@@ -422,14 +429,16 @@ Debug logging:
 ## Limitations
 
 - Session store is in memory by default. Set `server.responses_session_store_path`
-  to persist Responses session/cache metadata JSON across restarts.
+  to persist Responses session/cache metadata JSON and tool-call metadata across
+  restarts.
 - Responses cache reuse relies on upstream prompt caching via `prompt_cache_key`.
   Optional HTTP `previous_response_id` chaining is experimental; WebSocket
   continuation is not implemented.
 - OpenAI image support expects Claude Code base64 image blocks; remote image URLs are not fetched by RelayCode.
 - Local web tools run only for forced Anthropic web server tool requests.
-- Retry only applies to transport errors, HTTP 429, and HTTP 5xx before a stream
-  is accepted; mid-stream provider failures are returned as Anthropic SSE errors.
+- Retry applies to transport errors, HTTP 429/5xx before a stream is accepted,
+  and early Responses stream failures before any content is emitted. Later
+  mid-stream provider failures are returned as Anthropic SSE errors.
 
 ## Security
 
@@ -449,8 +458,8 @@ Debug logging:
 - **Provider keys via env.** Prefer `${OPENAI_API_KEY}` / `${DEEPSEEK_API_KEY}`
   over pasting keys into `relaycode.yaml`.
 - **Session store is in memory by default.** Set
-  `server.responses_session_store_path` if you want Responses session/cache
-  metadata on disk.
+  `server.responses_session_store_path` if you want Responses session/cache and
+  tool-call metadata on disk.
 
 ## FAQ
 
@@ -469,8 +478,8 @@ incoming model) wins. Example: `opus` → OpenAI Responses, `haiku` → DeepSeek
 chat, `*` → fallback.
 
 **Does it support image / vision?**
-Only through the native Anthropic route. OpenAI-compatible adapters reject
-user image blocks.
+Yes. Claude Code base64 image blocks map to OpenAI Chat `image_url` parts and
+Responses `input_image` parts. Native Anthropic routes pass image blocks through.
 
 **Will Claude Code know it's being proxied?**
 No. RelayCode speaks the Anthropic Messages API; Claude Code treats it as a
