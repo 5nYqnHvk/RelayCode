@@ -90,6 +90,7 @@ type Builder struct {
 
 	serverToolUse map[string]int
 	stopReason    string
+	errorMessage  string
 	finished      bool
 }
 
@@ -296,6 +297,7 @@ func (b *Builder) SetOutputTokens(n int)     { b.outputTokens = n }
 func (b *Builder) AddOutputTokens(delta int) { b.outputTokens += delta }
 func (b *Builder) AddInputTokens(delta int)  { b.inputTokens += delta }
 func (b *Builder) Finished() bool            { return b.finished }
+func (b *Builder) ErrorMessage() string      { return b.errorMessage }
 func (b *Builder) MarkFinished()             { b.finished = true }
 func (b *Builder) RawWriter() *Writer        { return b.w }
 
@@ -359,6 +361,7 @@ func (b *Builder) FinishWithError(msg string) {
 	if b.finished {
 		return
 	}
+	b.errorMessage = msg
 	if !b.started {
 		b.w.Event("error", map[string]any{
 			"type":  "error",

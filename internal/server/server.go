@@ -283,6 +283,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	started := time.Now()
 	log.Printf("messages: incoming=%s -> provider=%s upstream_model=%s", req.Model, resolved.ProviderName, resolved.Model)
 
 	ctx, err := capture.Start(r.Context(), rawBody, req.Model, resolved.ProviderName, resolved.Model)
@@ -293,11 +294,25 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	w = capture.WrapDownstream(ctx, w)
 	sw := sse.NewWriter(w)
 	builder := sse.NewBuilder(sw, newMessageID(), req.Model, estimateInputTokens(&req))
-	if err := adapter.Stream(ctx, &req, resolved.Model, builder); err != nil {
-		log.Printf("messages: adapter error: %v", err)
+	adapterErr := adapter.Stream(ctx, &req, resolved.Model, builder)
+	if adapterErr != nil {
+		log.Printf("messages: adapter error: %v", adapterErr)
 	}
 	if !builder.Finished() {
 		builder.Finish()
+	}
+	status := "ok"
+	if errMsg := builder.ErrorMessage(); errMsg != "" {
+		status = "error"
+		log.Printf("messages: complete provider=%s upstream_model=%s status=%s duration=%s error=%q", resolved.ProviderName, resolved.Model, status, time.Since(started).Round(time.Millisecond), errMsg)
+	} else if adapterErr != nil {
+		status = "error"
+		log.Printf("messages: complete provider=%s upstream_model=%s status=%s duration=%s error=%q", resolved.ProviderName, resolved.Model, status, time.Since(started).Round(time.Millisecond), adapterErr.Error())
+	} else if sw.Err() != nil {
+		status = "client_error"
+		log.Printf("messages: complete provider=%s upstream_model=%s status=%s duration=%s error=%q", resolved.ProviderName, resolved.Model, status, time.Since(started).Round(time.Millisecond), sw.Err().Error())
+	} else {
+		log.Printf("messages: complete provider=%s upstream_model=%s status=%s duration=%s", resolved.ProviderName, resolved.Model, status, time.Since(started).Round(time.Millisecond))
 	}
 }
 
