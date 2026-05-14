@@ -798,8 +798,28 @@ func (r *Request) SessionID() string {
 	return md.UserID
 }
 
+const (
+	compactToolResultMaxChars          = 12_000
+	compactToolResultMaxLines          = 240
+	compactToolResultHeadLines         = 80
+	compactToolResultTailLines         = 80
+	compactToolResultMaxImportantLines = 80
+)
+
 // ToolResultText flattens a tool_result block's content field into a string.
 func ToolResultText(raw json.RawMessage) (string, error) {
+	return ToolResultTextForUpstream(raw, false)
+}
+
+func ToolResultTextForUpstream(raw json.RawMessage, compact bool) (string, error) {
+	text, err := toolResultText(raw)
+	if err != nil || !compact {
+		return text, err
+	}
+	return CompactToolResultText(text), nil
+}
+
+func toolResultText(raw json.RawMessage) (string, error) {
 	if len(raw) == 0 {
 		return "", nil
 	}
@@ -815,18 +835,90 @@ func ToolResultText(raw json.RawMessage) (string, error) {
 		if err := json.Unmarshal(raw, &blocks); err != nil {
 			return "", err
 		}
-		var out string
-		for i, b := range blocks {
-			if b.Type != "text" {
-				continue
+		parts := make([]string, 0, len(blocks))
+		for _, b := range blocks {
+			if b.Type == "text" {
+				parts = append(parts, b.Text)
 			}
-			if i > 0 {
-				out += "\n"
-			}
-			out += b.Text
 		}
-		return out, nil
+		return strings.Join(parts, "\n"), nil
 	}
-	// object or other scalar — round-trip as JSON text
 	return string(raw), nil
+}
+
+func CompactToolResultText(text string) string {
+	lines := strings.Split(text, "\n")
+	if len(text) <= compactToolResultMaxChars && len(lines) <= compactToolResultMaxLines {
+		return text
+	}
+	if len(lines) == 1 {
+		return compactSingleLineToolResult(text)
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("[tool output compacted: %d bytes, %d lines; set server.compact_tool_results: false or use RELAYCODE_CAPTURE_DIR for full output]\n", len(text), len(lines)))
+	writeLineWindow(&b, "head", lines[:min(compactToolResultHeadLines, len(lines))])
+	important := importantToolResultLines(lines, compactToolResultHeadLines, compactToolResultTailLines)
+	if len(important) > 0 {
+		writeLineWindow(&b, "important", important)
+	}
+	if len(lines) > compactToolResultHeadLines {
+		start := len(lines) - compactToolResultTailLines
+		if start < compactToolResultHeadLines {
+			start = compactToolResultHeadLines
+		}
+		writeLineWindow(&b, "tail", lines[start:])
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func compactSingleLineToolResult(text string) string {
+	head := text
+	if len(head) > compactToolResultMaxChars/2 {
+		head = head[:compactToolResultMaxChars/2]
+	}
+	tail := ""
+	if len(text) > compactToolResultMaxChars/2 {
+		tail = text[len(text)-compactToolResultMaxChars/2:]
+	}
+	return fmt.Sprintf("[tool output compacted: %d bytes, 1 line; set server.compact_tool_results: false or use RELAYCODE_CAPTURE_DIR for full output]\n--- head ---\n%s\n--- tail ---\n%s", len(text), head, tail)
+}
+
+func importantToolResultLines(lines []string, head, tail int) []string {
+	startTail := len(lines) - tail
+	if startTail < head {
+		startTail = head
+	}
+	out := make([]string, 0, compactToolResultMaxImportantLines)
+	for i, line := range lines {
+		if i < head || i >= startTail || !isImportantToolResultLine(line) {
+			continue
+		}
+		out = append(out, line)
+		if len(out) >= compactToolResultMaxImportantLines {
+			break
+		}
+	}
+	return out
+}
+
+func isImportantToolResultLine(line string) bool {
+	lower := strings.ToLower(line)
+	for _, marker := range []string{"error", "fail", "panic", "traceback", "exception", "fatal", "exit status", "killed", "oom", "denied", "permission", "not found"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func writeLineWindow(b *strings.Builder, name string, lines []string) {
+	if len(lines) == 0 {
+		return
+	}
+	b.WriteString("--- ")
+	b.WriteString(name)
+	b.WriteString(" ---\n")
+	b.WriteString(strings.Join(lines, "\n"))
+	b.WriteByte('\n')
 }

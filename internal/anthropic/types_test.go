@@ -239,3 +239,38 @@ func TestNormalizePreviousResponseTailDropsEmptyUserAfterServerToolRemoval(t *te
 		t.Fatalf("server tool should degrade to text: %+v", got)
 	}
 }
+
+func TestToolResultTextForUpstreamCompactsLargeOutput(t *testing.T) {
+	var lines []string
+	for i := 0; i < 300; i++ {
+		line := "line"
+		if i == 150 {
+			line = "panic: important failure"
+		}
+		lines = append(lines, line)
+	}
+	raw, err := json.Marshal(strings.Join(lines, "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := ToolResultTextForUpstream(raw, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact, err := ToolResultTextForUpstream(raw, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full == compact || !strings.Contains(compact, "tool output compacted") || !strings.Contains(compact, "panic: important failure") {
+		t.Fatalf("compact output = %q", compact)
+	}
+	if len(compact) >= len(full) {
+		t.Fatalf("compact length %d >= full length %d", len(compact), len(full))
+	}
+}
+
+func TestCompactToolResultTextKeepsSmallOutput(t *testing.T) {
+	if got := CompactToolResultText("small output"); got != "small output" {
+		t.Fatalf("got %q", got)
+	}
+}
