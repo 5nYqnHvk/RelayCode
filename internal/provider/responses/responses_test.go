@@ -2,6 +2,7 @@ package responses
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -244,7 +245,7 @@ func TestBuildRequestSkipsToolBridgeWhenToolChoiceNone(t *testing.T) {
 
 func TestCodexAuthHeaders(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
-	body := `{"tokens":{"access_token":"access-token","account_id":"account-id"}}`
+	body := `{"auth_mode":"chatgpt","tokens":{"access_token":"access-token","account_id":"account-id"}}`
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -254,6 +255,86 @@ func TestCodexAuthHeaders(t *testing.T) {
 	}
 	if headers["Authorization"] != "Bearer access-token" || headers["ChatGPT-Account-ID"] != "account-id" {
 		t.Fatalf("headers = %+v", headers)
+	}
+}
+
+func TestCodexAuthHeadersUsesOpenAIAPIKeyMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	body := `{"OPENAI_API_KEY":"file-key","auth_mode":"apikey"}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	headers, err := codexAuthHeaders(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if headers["Authorization"] != "Bearer file-key" || headers["ChatGPT-Account-ID"] != "" {
+		t.Fatalf("headers = %+v", headers)
+	}
+}
+
+func TestCodexAuthHeadersParsesFedrampIDToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	claims := `{"https://api.openai.com/auth":{"chatgpt_account_id":"workspace-id","chatgpt_account_is_fedramp":true}}`
+	idToken := "e30." + base64.RawURLEncoding.EncodeToString([]byte(claims)) + ".sig"
+	body := `{"auth_mode":"chatgpt","tokens":{"access_token":"access-token","id_token":"` + idToken + `","account_id":"fallback-id"}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	headers, err := codexAuthHeaders(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if headers["Authorization"] != "Bearer access-token" || headers["ChatGPT-Account-ID"] != "workspace-id" || headers["X-OpenAI-Fedramp"] != "true" {
+		t.Fatalf("headers = %+v", headers)
+	}
+}
+
+func TestCodexChatGPTAuthUsesCodexBackendForOpenAIBaseURL(t *testing.T) {
+	auth := codexAuth{mode: "chatgpt", token: "access-token"}
+	if got := responsesBaseURL("https://api.openai.com/v1", auth); got != codexChatGPTBaseURL {
+		t.Fatalf("baseURL = %q", got)
+	}
+	if got := responsesBaseURL("https://api.deepseek.com/v1", auth); got != "https://api.deepseek.com/v1" {
+		t.Fatalf("non-OpenAI baseURL = %q", got)
+	}
+	if got := responsesBaseURL("https://api.openai.com/v1", codexAuth{mode: "apikey", token: "key"}); got != "https://api.openai.com/v1" {
+		t.Fatalf("apikey baseURL = %q", got)
+	}
+}
+
+func TestNewAllowsCodexAuthPathWithoutAPIKey(t *testing.T) {
+	adapter, err := New(config.ProviderConfig{BaseURL: "https://api.example.com/v1", CodexAuthPath: "/tmp/auth.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter == nil {
+		t.Fatal("adapter is nil")
+	}
+}
+
+func TestStreamCodexAuthPathOverridesAPIKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	body := `{"OPENAI_API_KEY":"file-key","auth_mode":"apikey"}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer file-key" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: response.completed
+` + `data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":2}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{pc: config.ProviderConfig{BaseURL: server.URL, APIKey: "config-key", CodexAuthPath: path}, client: server.Client()}
+	req := &anthropic.Request{Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Raw: "hi"}}}}
+	rw := &recordResponseWriter{}
+	builder := sse.NewBuilder(sse.NewWriter(rw), "msg", "model", 1)
+	if err := adapter.Stream(context.Background(), req, "gpt", builder); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -560,6 +641,52 @@ func TestStreamChainsPreviousResponseIDWhenExperimental(t *testing.T) {
 	}
 	assertFunctionOutputTail(bodies[1], "resp_1", "call_1", "ok 1")
 	assertFunctionOutputTail(bodies[2], "resp_2", "call_2", "ok 2")
+}
+
+func TestStreamChatGPTAuthDisablesPreviousResponseIDStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	body := `{"auth_mode":"chatgpt","tokens":{"access_token":"access-token","account_id":"account-id"}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: response.completed
+` + `data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{pc: config.ProviderConfig{BaseURL: server.URL, APIKey: "key", CodexAuthPath: path, ExperimentalPreviousResponseID: true}, client: server.Client()}
+	adapter.SetSession(session.NewStore(time.Hour, 10), "openai")
+	first := &anthropic.Request{MaxTokens: 100, Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Raw: "first"}}}}
+	second := &anthropic.Request{MaxTokens: 100, Messages: []anthropic.Message{
+		{Role: "user", Content: anthropic.Content{Raw: "first"}},
+		{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "text", Text: "reply"}, {Type: "tool_use", ID: "call_1", Name: "Read", Input: json.RawMessage(`{"file_path":"/tmp/a"}`)}}}},
+		{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_result", ToolUseID: "call_1", Content: json.RawMessage(`"ok 1"`)}}}},
+	}}
+	for _, req := range []*anthropic.Request{first, second} {
+		rw := &recordResponseWriter{}
+		builder := sse.NewBuilder(sse.NewWriter(rw), "msg", "model", 1)
+		if err := adapter.Stream(context.Background(), req, "gpt", builder); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("bodies len = %d", len(bodies))
+	}
+	if _, ok := bodies[1]["previous_response_id"]; ok || bodies[1]["store"] != false {
+		t.Fatalf("ChatGPT auth should full replay with store false: %+v", bodies[1])
+	}
+	if _, ok := bodies[1]["max_output_tokens"]; ok {
+		t.Fatalf("ChatGPT auth should omit max_output_tokens: %+v", bodies[1])
+	}
 }
 
 func TestStreamDoesNotUsePreviousResponseIDByDefault(t *testing.T) {

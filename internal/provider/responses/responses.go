@@ -3,6 +3,7 @@ package responses
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -21,6 +22,8 @@ import (
 	"github.com/5nYqnHvk/RelayCode/internal/streamparse"
 )
 
+const codexChatGPTBaseURL = "https://chatgpt.com/backend-api/codex"
+
 type Adapter struct {
 	pc           config.ProviderConfig
 	client       *http.Client
@@ -30,8 +33,8 @@ type Adapter struct {
 }
 
 func New(pc config.ProviderConfig) (provider.Adapter, error) {
-	if pc.APIKey == "" {
-		return nil, fmt.Errorf("openai_responses: api_key is empty")
+	if pc.APIKey == "" && pc.CodexAuthPath == "" {
+		return nil, fmt.Errorf("openai_responses: api_key or codex_auth_path is required")
 	}
 	client, err := provider.HTTPClient(pc)
 	if err != nil {
@@ -104,9 +107,17 @@ func (a *Adapter) streamOnce(
 		}
 	}
 
+	auth, err := loadCodexAuth(a.pc.CodexAuthPath)
+	if err != nil {
+		b.Start()
+		b.FinishWithError(err.Error())
+		return nil
+	}
+	previousResponseID := a.pc.ExperimentalPreviousResponseID && !auth.isChatGPT()
+
 	bodyReq := req
 	chained := false
-	if !forceFull && a.pc.ExperimentalPreviousResponseID && lookup != nil && lookup.Chain != nil && lookup.Chain.ResponseID != "" {
+	if !forceFull && previousResponseID && lookup != nil && lookup.Chain != nil && lookup.Chain.ResponseID != "" {
 		tailReq := *req
 		tailReq.Messages = lookup.Tail
 		bodyReq = &tailReq
@@ -127,21 +138,19 @@ func (a *Adapter) streamOnce(
 	if chained {
 		body["previous_response_id"] = lookup.Chain.ResponseID
 	}
-	if a.pc.ExperimentalPreviousResponseID {
+	if previousResponseID {
 		body["store"] = true
 	}
 	if promptCacheOk {
 		body["prompt_cache_key"] = cacheKey
 	}
+	if auth.isChatGPT() {
+		delete(body, "max_output_tokens")
+	}
 	raw, _ := json.Marshal(body)
 
-	extraHeaders, err := codexAuthHeaders(a.pc.CodexAuthPath)
-	if err != nil {
-		b.Start()
-		b.FinishWithError(err.Error())
-		return nil
-	}
-	reader, closer, err := provider.PostStreamWithClient(ctx, a.client, a.pc.MaxRetries, a.pc.BaseURL, "/responses", a.pc.APIKey, "Authorization", extraHeaders, raw)
+	baseURL := responsesBaseURL(a.pc.BaseURL, auth)
+	reader, closer, err := provider.PostStreamWithClient(ctx, a.client, a.pc.MaxRetries, baseURL, "/responses", a.pc.APIKey, "Authorization", auth.headers(), raw)
 	if err != nil {
 		if chained && isInvalidPreviousResponseError(err) && a.store != nil && lookup != nil && lookup.Chain != nil {
 			a.store.Invalidate(lookup.Chain.Key)
@@ -501,30 +510,121 @@ func (a *Adapter) streamOnce(
 }
 
 func codexAuthHeaders(path string) (map[string]string, error) {
+	auth, err := loadCodexAuth(path)
+	if err != nil {
+		return nil, err
+	}
+	return auth.headers(), nil
+}
+
+type codexAuth struct {
+	mode      string
+	token     string
+	accountID string
+	fedramp   bool
+}
+
+func (a codexAuth) headers() map[string]string {
+	if a.token == "" {
+		return nil
+	}
+	headers := map[string]string{"Authorization": "Bearer " + a.token}
+	if a.accountID != "" {
+		headers["ChatGPT-Account-ID"] = a.accountID
+	}
+	if a.fedramp {
+		headers["X-OpenAI-Fedramp"] = "true"
+	}
+	return headers
+}
+
+func (a codexAuth) isChatGPT() bool {
+	return a.mode == "chatgpt" || a.mode == "chatgptAuthTokens"
+}
+
+func loadCodexAuth(path string) (codexAuth, error) {
 	if path == "" {
-		return nil, nil
+		return codexAuth{}, nil
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read codex auth: %w", err)
+		return codexAuth{}, fmt.Errorf("read codex auth: %w", err)
 	}
 	var auth struct {
-		Tokens struct {
-			AccessToken string `json:"access_token"`
-			AccountID   string `json:"account_id"`
+		AuthMode     string `json:"auth_mode"`
+		OpenAIAPIKey string `json:"OPENAI_API_KEY"`
+		Tokens       *struct {
+			AccessToken  string `json:"access_token"`
+			AccountID    string `json:"account_id"`
+			IDToken      string `json:"id_token"`
+			RefreshToken string `json:"refresh_token"`
 		} `json:"tokens"`
 	}
 	if err := json.Unmarshal(raw, &auth); err != nil {
-		return nil, fmt.Errorf("parse codex auth: %w", err)
+		return codexAuth{}, fmt.Errorf("parse codex auth: %w", err)
 	}
-	if auth.Tokens.AccessToken == "" {
-		return nil, fmt.Errorf("codex auth %s missing tokens.access_token", path)
+	mode := auth.AuthMode
+	if mode == "" {
+		if auth.OpenAIAPIKey != "" {
+			mode = "apikey"
+		} else {
+			mode = "chatgpt"
+		}
 	}
-	headers := map[string]string{"Authorization": "Bearer " + auth.Tokens.AccessToken}
-	if auth.Tokens.AccountID != "" {
-		headers["ChatGPT-Account-ID"] = auth.Tokens.AccountID
+	switch mode {
+	case "apikey":
+		if auth.OpenAIAPIKey == "" {
+			return codexAuth{}, fmt.Errorf("codex auth %s missing OPENAI_API_KEY", path)
+		}
+		return codexAuth{mode: mode, token: auth.OpenAIAPIKey}, nil
+	case "chatgpt", "chatgptAuthTokens":
+		if auth.Tokens == nil || auth.Tokens.AccessToken == "" {
+			return codexAuth{}, fmt.Errorf("codex auth %s missing tokens.access_token", path)
+		}
+		accountID, fedramp := codexTokenMetadata(auth.Tokens.AccountID, auth.Tokens.IDToken)
+		return codexAuth{mode: mode, token: auth.Tokens.AccessToken, accountID: accountID, fedramp: fedramp}, nil
+	default:
+		return codexAuth{}, fmt.Errorf("codex auth %s unsupported auth_mode %q", path, mode)
 	}
-	return headers, nil
+}
+
+func responsesBaseURL(configured string, auth codexAuth) string {
+	if auth.isChatGPT() && isOpenAIResponsesBaseURL(configured) {
+		return codexChatGPTBaseURL
+	}
+	return configured
+}
+
+func isOpenAIResponsesBaseURL(raw string) bool {
+	normalized := strings.TrimRight(strings.TrimSpace(raw), "/")
+	return normalized == "https://api.openai.com/v1" || normalized == "https://api.openai.com"
+}
+
+func codexTokenMetadata(accountID, idToken string) (string, bool) {
+	if idToken == "" {
+		return accountID, false
+	}
+	parts := strings.Split(idToken, ".")
+	if len(parts) < 2 || parts[1] == "" {
+		return accountID, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return accountID, false
+	}
+	var claims struct {
+		Auth struct {
+			ChatGPTAccountID        string `json:"chatgpt_account_id"`
+			ChatGPTAccountIsFedramp bool   `json:"chatgpt_account_is_fedramp"`
+		} `json:"https://api.openai.com/auth"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return accountID, false
+	}
+	if claims.Auth.ChatGPTAccountID != "" {
+		accountID = claims.Auth.ChatGPTAccountID
+	}
+	return accountID, claims.Auth.ChatGPTAccountIsFedramp
 }
 
 func isInvalidPreviousResponseError(err error) bool {
