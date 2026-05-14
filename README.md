@@ -374,6 +374,8 @@ Behavior:
 | Responses namespace tools | Optional | `responses_namespace_tools: true` groups `mcp__server__tool` names into Codex-style namespace declarations. |
 | Chained custom tool results | Works | Stored `call_id` metadata lets `previous_response_id` tails emit `custom_tool_call_output`. |
 
+Claude Code tool probe on 2026-05-14 verified safe, reversible client tools through RelayCode: agent dispatch, shell foreground/background tasks, file read/write/edit, notebook edit, task list/update/output/stop, cron create/list/delete, monitor events, web fetch/search, and plan-mode entry/exit. Worktree and dynamic loop wakeups were not exercised because they require explicit workflow context. `PushNotification` is a known caveat from that probe: the adapter dropped the tool call due schema validation.
+
 ## Observability
 
 Stats endpoint:
