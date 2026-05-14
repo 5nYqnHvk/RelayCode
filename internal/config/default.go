@@ -49,7 +49,7 @@ providers:
     # http_proxy: "${HTTPS_PROXY}"
     # max_retries: 2
     # max_concurrency: 4
-    # codex_auth_path: /home/you/.codex/auth.json  # mimic Codex ChatGPT auth
+    # codex_auth_path: /home/you/.codex/auth.json  # Codex auth.json; overrides api_key when set
     # experimental_previous_response_id: false   # opt into non-Codex HTTP previous_response_id chaining
     # experimental_passthrough_server_tools: true  # pass server tools upstream as-is
     # responses_custom_tool_mode: native # native|function; function downgrades custom tools for stricter gateways

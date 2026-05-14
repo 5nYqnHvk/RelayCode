@@ -313,11 +313,13 @@ Behavior:
 
 Optional knobs:
 
-- `codex_auth_path`: reads local Codex auth JSON and uses
-  `tokens.access_token` as `Authorization: Bearer ...`; also forwards
-  `tokens.account_id` as `ChatGPT-Account-ID` when present. Useful when
-  targeting OpenAI endpoints that expect Codex-style ChatGPT auth instead of
-  normal API key auth.
+- `codex_auth_path`: reads local Codex `auth.json`. `auth_mode: apikey` uses
+  `OPENAI_API_KEY`; `auth_mode: chatgpt` / `chatgptAuthTokens` uses
+  `tokens.access_token`, forwards `ChatGPT-Account-ID` from token metadata, and
+  forwards `X-OpenAI-Fedramp` for FedRAMP accounts. ChatGPT auth with the
+  default OpenAI base URL uses Codex's `https://chatgpt.com/backend-api/codex`
+  base URL. When set, `codex_auth_path` takes precedence over `api_key`, and
+  `api_key` may be omitted.
 - `experimental_previous_response_id`: enables HTTP `previous_response_id`
   chaining for backends that support it. Default stays off for Codex-style full
   replay with `prompt_cache_key`.
