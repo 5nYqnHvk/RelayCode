@@ -116,7 +116,7 @@ ship the `relaycode` binary, `relaycode.example.yaml`, `README.md`, and
 Linux / macOS:
 
 ```bash
-VERSION=1.4.0
+VERSION=1.4.1
 curl -L -o relaycode.tar.gz \
   "https://github.com/5nYqnHvk/RelayCode/releases/download/${VERSION}/relaycode-${VERSION}-linux-amd64.tar.gz"
 tar -xzf relaycode.tar.gz
@@ -252,7 +252,7 @@ providers:
     # http_proxy: "${HTTPS_PROXY}"
     # max_retries: 2
     # max_concurrency: 4
-    # codex_auth_path: /home/you/.codex/auth.json
+    # codex_auth_path: /home/you/.codex/auth.json  # Codex auth.json; overrides api_key when set
     # experimental_previous_response_id: false
     # experimental_passthrough_server_tools: true
     # responses_custom_tool_mode: native # native|function; function downgrades custom tools for stricter gateways
