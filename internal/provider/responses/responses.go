@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/5nYqnHvk/RelayCode/internal/anthropic"
 	"github.com/5nYqnHvk/RelayCode/internal/config"
@@ -61,7 +62,7 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 			return ctx.Err()
 		}
 	}
-	return a.streamOnce(ctx, req, upstreamModel, b, false)
+	return a.streamOnce(ctx, req, upstreamModel, b, false, a.pc.MaxRetries)
 }
 
 func (a *Adapter) streamOnce(
@@ -70,6 +71,7 @@ func (a *Adapter) streamOnce(
 	upstreamModel string,
 	b *sse.Builder,
 	forceFull bool,
+	streamRetries int,
 ) error {
 	var (
 		lookup        *session.Lookup
@@ -145,7 +147,7 @@ func (a *Adapter) streamOnce(
 			a.store.Stats.ExpiredInvalid.Add(1)
 			a.store.Stats.ForcedReplays.Add(1)
 			log.Printf("responses: previous_response_id invalid provider=%s model=%s resp=%s; retrying full replay", a.providerName, upstreamModel, lookup.Chain.ResponseID)
-			return a.streamOnce(ctx, req, upstreamModel, b, true)
+			return a.streamOnce(ctx, req, upstreamModel, b, true, streamRetries)
 		}
 		b.Start()
 		b.FinishWithError(err.Error())
@@ -407,10 +409,30 @@ func (a *Adapter) streamOnce(
 		return nil
 	})
 	if err != nil {
+		if !b.HasContent() && streamRetries > 0 && ctx.Err() == nil {
+			closer.Close()
+			delay := streamRetryDelay(a.pc.MaxRetries - streamRetries + 1)
+			log.Printf("responses: stream retry provider=%s model=%s remaining=%d delay=%s error=%q", a.providerName, upstreamModel, streamRetries-1, delay, err.Error())
+			if !sleepContext(ctx, delay) {
+				b.FinishWithError(ctx.Err().Error())
+				return nil
+			}
+			return a.streamOnce(ctx, req, upstreamModel, b, forceFull, streamRetries-1)
+		}
 		b.FinishWithError(err.Error())
 		return nil
 	}
 	if upstreamErrMsg != "" {
+		if !b.HasContent() && streamRetries > 0 && ctx.Err() == nil && isRetriableUpstreamMessage(upstreamErrMsg) {
+			closer.Close()
+			delay := streamRetryDelay(a.pc.MaxRetries - streamRetries + 1)
+			log.Printf("responses: upstream retry provider=%s model=%s remaining=%d delay=%s error=%q", a.providerName, upstreamModel, streamRetries-1, delay, upstreamErrMsg)
+			if !sleepContext(ctx, delay) {
+				b.FinishWithError(ctx.Err().Error())
+				return nil
+			}
+			return a.streamOnce(ctx, req, upstreamModel, b, forceFull, streamRetries-1)
+		}
 		b.FinishWithError(upstreamErrMsg)
 		return nil
 	}
@@ -504,6 +526,34 @@ func isInvalidPreviousResponseError(err error) bool {
 		strings.Contains(msg, "previous response") ||
 		strings.Contains(msg, "not found") ||
 		strings.Contains(msg, "expired")
+}
+
+func isRetriableUpstreamMessage(msg string) bool {
+	msg = strings.ToLower(msg)
+	for _, marker := range []string{"429", "500", "502", "503", "504", "busy", "overload", "rate limit", "timeout", "timed out", "temporary", "try again", "unavailable"} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func streamRetryDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	return time.Duration(attempt) * 250 * time.Millisecond
+}
+
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func isCallableItem(kind string) bool {

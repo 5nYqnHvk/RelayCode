@@ -88,10 +88,11 @@ type Builder struct {
 	tools      map[string]*toolState // keyed by upstream call id
 	toolsOrder []*toolState
 
-	serverToolUse map[string]int
-	stopReason    string
-	errorMessage  string
-	finished      bool
+	serverToolUse  map[string]int
+	stopReason     string
+	errorMessage   string
+	emittedContent bool
+	finished       bool
 }
 
 type toolState struct {
@@ -140,6 +141,7 @@ func (b *Builder) EnsureText() {
 	if b.textOpen {
 		return
 	}
+	b.emittedContent = true
 	b.closeThinking()
 	b.textIndex = b.alloc()
 	b.textOpen = true
@@ -166,6 +168,7 @@ func (b *Builder) EnsureThinking() {
 	if b.thinkingOpen {
 		return
 	}
+	b.emittedContent = true
 	b.closeText()
 	b.thinkingIndex = b.alloc()
 	b.thinkingOpen = true
@@ -205,6 +208,7 @@ func (b *Builder) startToolBlock(callID, name, typ string) {
 }
 
 func (b *Builder) startToolBlockWithInput(callID, name, typ string, input any) {
+	b.emittedContent = true
 	b.closeText()
 	b.closeThinking()
 	ts, ok := b.tools[callID]
@@ -263,6 +267,7 @@ func (b *Builder) EmitWebSearchResult(callID string, content any) {
 }
 
 func (b *Builder) EmitServerToolResult(resultType, callID string, content any) {
+	b.emittedContent = true
 	b.closeText()
 	b.closeThinking()
 	b.closeAllTools()
@@ -298,6 +303,7 @@ func (b *Builder) AddOutputTokens(delta int) { b.outputTokens += delta }
 func (b *Builder) AddInputTokens(delta int)  { b.inputTokens += delta }
 func (b *Builder) Finished() bool            { return b.finished }
 func (b *Builder) ErrorMessage() string      { return b.errorMessage }
+func (b *Builder) HasContent() bool          { return b.emittedContent }
 func (b *Builder) MarkFinished()             { b.finished = true }
 func (b *Builder) RawWriter() *Writer        { return b.w }
 

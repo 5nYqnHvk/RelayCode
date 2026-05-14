@@ -806,6 +806,77 @@ func TestStreamHandlesResponsesErrorEvent(t *testing.T) {
 	if !strings.Contains(out, "bad upstream") || !strings.Contains(out, `"stop_reason":"end_turn"`) {
 		t.Fatalf("output = %s", out)
 	}
+	if builder.ErrorMessage() != "bad upstream" {
+		t.Fatalf("error message = %q", builder.ErrorMessage())
+	}
+}
+
+func TestStreamRetriesTransportErrorBeforeContent(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if attempts == 1 {
+			w.Header().Set("Content-Length", "100")
+			_, _ = w.Write([]byte("data: {"))
+			return
+		}
+		_, _ = w.Write([]byte(`event: response.completed
+` + `data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":2}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{pc: config.ProviderConfig{BaseURL: server.URL, APIKey: "key", MaxRetries: 1}, client: server.Client()}
+	req := &anthropic.Request{Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Raw: "hi"}}}}
+	rw := &recordResponseWriter{}
+	builder := sse.NewBuilder(sse.NewWriter(rw), "msg", "model", 1)
+	if err := adapter.Stream(context.Background(), req, "gpt", builder); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d", attempts)
+	}
+	out := rw.body.String()
+	if strings.Contains(out, "unexpected EOF") || !strings.Contains(out, "event: message_stop") {
+		t.Fatalf("output = %s", out)
+	}
+	if builder.ErrorMessage() != "" {
+		t.Fatalf("error message = %q", builder.ErrorMessage())
+	}
+}
+
+func TestStreamRetriesRetriableResponseErrorBeforeContent(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if attempts == 1 {
+			_, _ = w.Write([]byte(`event: response.error
+` + `data: {"type":"response.error","error":{"message":"upstream busy, try again"}}` + "\n\n"))
+			return
+		}
+		_, _ = w.Write([]byte(`event: response.completed
+` + `data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":2}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{pc: config.ProviderConfig{BaseURL: server.URL, APIKey: "key", MaxRetries: 1}, client: server.Client()}
+	req := &anthropic.Request{Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Raw: "hi"}}}}
+	rw := &recordResponseWriter{}
+	builder := sse.NewBuilder(sse.NewWriter(rw), "msg", "model", 1)
+	if err := adapter.Stream(context.Background(), req, "gpt", builder); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d", attempts)
+	}
+	out := rw.body.String()
+	if strings.Contains(out, "upstream busy") || !strings.Contains(out, "event: message_stop") {
+		t.Fatalf("output = %s", out)
+	}
+	if builder.ErrorMessage() != "" {
+		t.Fatalf("error message = %q", builder.ErrorMessage())
+	}
 }
 
 type errString string
