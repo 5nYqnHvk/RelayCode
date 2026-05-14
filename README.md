@@ -118,8 +118,9 @@ VERSION=1.3.0
 curl -L -o relaycode.tar.gz \
   "https://github.com/5nYqnHvk/RelayCode/releases/download/${VERSION}/relaycode-${VERSION}-linux-amd64.tar.gz"
 tar -xzf relaycode.tar.gz
-cp relaycode.example.yaml relaycode.yaml
-./relaycode -config relaycode.yaml
+./relaycode
+# If relaycode.yaml is missing, RelayCode writes one from its embedded example.
+# Interactive terminals can choose continue/exit; non-interactive runs exit after writing.
 ```
 
 Windows: download the matching `*.zip`, unzip, then run `relaycode.exe`.
@@ -134,7 +135,9 @@ go build -o relaycode ./cmd/relaycode
 
 ```bash
 go build -o relaycode ./cmd/relaycode
-cp relaycode.example.yaml relaycode.yaml
+./relaycode
+# If relaycode.yaml is missing, RelayCode writes one from its embedded example.
+# Interactive terminals can choose continue/exit; non-interactive runs exit after writing.
 ```
 
 Edit `relaycode.yaml`, set provider keys, then run:

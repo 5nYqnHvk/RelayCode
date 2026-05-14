@@ -6,6 +6,30 @@ import (
 	"testing"
 )
 
+func TestExampleYAMLSyncsWithRootExample(t *testing.T) {
+	rootExample, err := os.ReadFile("../../relaycode.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rootExample) != ExampleYAML {
+		t.Fatal("ExampleYAML drifted from relaycode.example.yaml")
+	}
+}
+
+func TestWriteExample(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relaycode.yaml")
+	if err := WriteExample(path); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != ExampleYAML {
+		t.Fatalf("written example mismatch")
+	}
+}
+
 func TestLoadParsesConfigAndExpandsEnv(t *testing.T) {
 	t.Setenv("TEST_RELAYCODE_TOKEN", "secret-token")
 	t.Setenv("TEST_RELAYCODE_KEY", "secret-key")

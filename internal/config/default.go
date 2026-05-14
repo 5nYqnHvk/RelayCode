@@ -1,0 +1,71 @@
+package config
+
+import "os"
+
+const ExampleYAML = `# RelayCode proxy config
+server:
+  host: 127.0.0.1
+  port: 8080
+  auth_token: ""   # when non-empty, clients must send matching x-api-key / Authorization
+  # Local Anthropic web_search/web_fetch handler. Disabled by default because it
+  # performs outbound HTTP from the proxy. Runs only when tool_choice forces it.
+  enable_web_server_tools: false
+  web_fetch_allowed_schemes: http,https
+  web_fetch_allow_private_networks: false
+  # Claude Code fast-path optimizations. Disable individually for debugging.
+  fast_prefix_detection: true
+  enable_network_probe_mock: true
+  enable_title_generation_skip: true
+  enable_suggestion_mode_skip: true
+  enable_filepath_extraction_mock: true
+  log_request_snapshots: false   # safe shape-only request logs; no raw prompt text
+  compact_tool_results: false    # compact long tool output before replaying upstream
+  responses_session_store_path: "" # optional durable Responses session/cache metadata JSON
+
+# Incoming Claude model name -> backend route.
+# "match" is checked as a case-insensitive substring of the incoming model
+# name (e.g. "opus", "sonnet", "haiku"). A fallback entry with match: "*"
+# is required.
+routes:
+  - match: "opus"
+    provider: openai_responses
+    model: gpt-5.5
+  - match: "sonnet"
+    provider: openai_responses
+    model: gpt-5.4
+  - match: "*"
+    provider: deepseek_chat
+    model: deepseek-chat
+
+providers:
+  openai_responses:
+    kind: openai_responses                 # POST /v1/responses
+    base_url: https://api.openai.com/v1
+    api_key: "${OPENAI_API_KEY}"
+    # http_timeout_seconds: 300
+    # http_proxy: "${HTTPS_PROXY}"
+    # max_retries: 2
+    # max_concurrency: 4
+    # codex_auth_path: /home/you/.codex/auth.json  # mimic Codex ChatGPT auth
+    # experimental_previous_response_id: false   # opt into non-Codex HTTP previous_response_id chaining
+    # experimental_passthrough_server_tools: true  # pass server tools upstream as-is
+
+  openai_chat:
+    kind: openai_chat                      # POST /v1/chat/completions
+    base_url: https://api.openai.com/v1
+    api_key: "${OPENAI_API_KEY}"
+
+  anthropic_native:
+    kind: anthropic_messages               # POST /v1/messages, raw Anthropic SSE passthrough
+    base_url: https://api.anthropic.com/v1
+    api_key: "${ANTHROPIC_API_KEY}"
+
+  deepseek_chat:
+    kind: openai_chat
+    base_url: https://api.deepseek.com/v1
+    api_key: "${DEEPSEEK_API_KEY}"
+`
+
+func WriteExample(path string) error {
+	return os.WriteFile(path, []byte(ExampleYAML), 0o600)
+}
