@@ -19,6 +19,7 @@ func TestLoadParsesConfigAndExpandsEnv(t *testing.T) {
   enable_web_server_tools: true
   web_fetch_allowed_schemes: https
   web_fetch_allow_private_networks: true
+  compact_tool_results: true
   responses_session_store_path: "${TEST_RELAYCODE_STORE}"
 
 routes:
@@ -54,6 +55,7 @@ providers:
 		!cfg.Server.EnableWebServerTools ||
 		cfg.Server.WebFetchAllowedSchemes != "https" ||
 		!cfg.Server.WebFetchAllowPrivateNetworks ||
+		!cfg.Server.CompactToolResults ||
 		cfg.Server.ResponsesSessionStorePath != "/tmp/relaycode-sessions.json" {
 		t.Fatalf("Server = %+v", cfg.Server)
 	}

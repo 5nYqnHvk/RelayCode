@@ -15,6 +15,7 @@ server:
   enable_suggestion_mode_skip: true
   enable_filepath_extraction_mock: true
   log_request_snapshots: false   # safe shape-only request logs; no raw prompt text
+  compact_tool_results: false    # compact long tool output before replaying upstream
   responses_session_store_path: "" # optional durable Responses session/cache metadata JSON
 
 # Incoming Claude model name -> backend route.

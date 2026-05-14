@@ -66,6 +66,7 @@ func New(cfg *config.Config) (*Server, error) {
 func (s *Server) adapterFor(name string, pc config.ProviderConfig) (provider.Adapter, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	pc.CompactToolResults = s.cfg.Server.CompactToolResults
 
 	if a, ok := s.adapters[name]; ok {
 		return a, nil

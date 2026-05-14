@@ -31,6 +31,7 @@ type ServerConfig struct {
 	EnableSuggestionModeSkip     bool
 	EnableFilepathExtractionMock bool
 	LogRequestSnapshots          bool
+	CompactToolResults           bool
 	ResponsesSessionStorePath    string
 }
 
@@ -59,6 +60,7 @@ type ProviderConfig struct {
 	MaxRetries                         int
 	MaxConcurrency                     int
 	ExperimentalPreviousResponseID     bool
+	CompactToolResults                 bool
 }
 
 // Load reads the YAML config at path and validates it.
@@ -117,6 +119,7 @@ func fromDoc(doc yamlMap) (*Config, error) {
 		cfg.Server.EnableSuggestionModeSkip = boolDefault(srv, "enable_suggestion_mode_skip", cfg.Server.EnableSuggestionModeSkip)
 		cfg.Server.EnableFilepathExtractionMock = boolDefault(srv, "enable_filepath_extraction_mock", cfg.Server.EnableFilepathExtractionMock)
 		cfg.Server.LogRequestSnapshots = boolAt(srv, "log_request_snapshots")
+		cfg.Server.CompactToolResults = boolAt(srv, "compact_tool_results")
 		if v, ok := srv["responses_session_store_path"].(string); ok {
 			cfg.Server.ResponsesSessionStorePath = expandEnv(v)
 		}
