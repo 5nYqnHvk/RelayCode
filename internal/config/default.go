@@ -32,19 +32,29 @@ server:
     session_store_path: "" # optional durable Responses session/cache metadata JSON
 
 # Incoming Claude model name -> backend route.
-# "match" is checked as a case-insensitive substring of the incoming model
-# name (e.g. "opus", "sonnet", "haiku"). A fallback entry with match: "*"
-# is required.
+# "match" is a virtual model id surfaced to Claude Code's /model picker.
+# Route order matters. Fallback entry with match: "*" is required.
 routes:
-  - match: "opus"
+  - match: "claude/opus-4-7"
     provider: openai_responses
     model: gpt-5.5
-  - match: "sonnet"
+  - match: "claude/sonnet-4-6"
+    provider: openai_responses
+    model: gpt-5.4
+  - match: "claude/haiku-4-5"
+    provider: openai_responses
+    model: gpt-5.4
+  - match: "claude/test"
     provider: openai_responses
     model: gpt-5.4
   - match: "*"
-    provider: deepseek_chat
-    model: deepseek-chat
+    provider: openai_responses
+    model: gpt-5.4
+
+tool_validation:
+  unknown_tools: drop
+  invalid_known_tools: warn
+  malformed_arguments: repair
 
 providers:
   openai_responses:

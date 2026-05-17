@@ -15,8 +15,8 @@ func TestHandleModelsListsConfiguredRoutes(t *testing.T) {
 	srv, err := New(&config.Config{
 		Server: config.ServerConfig{AuthToken: "token"},
 		Routes: []config.Route{
-			{Match: "opus", Provider: "responses", Model: "gpt-strong"},
-			{Match: "sonnet", Provider: "responses", Model: "gpt-strong"},
+			{Match: "claude/opus-4-7", Provider: "responses", Model: "gpt-5.5"},
+			{Match: "claude/sonnet-4-6", Provider: "responses", Model: "gpt-5.4"},
 			{Match: "*", Provider: "chat", Model: "gpt-fallback"},
 		},
 		Providers: map[string]config.ProviderConfig{
@@ -36,21 +36,70 @@ func TestHandleModelsListsConfiguredRoutes(t *testing.T) {
 		t.Fatalf("status = %d body=%s", rw.Code, rw.Body.String())
 	}
 	var body struct {
-		Object string `json:"object"`
-		Data   []struct {
-			ID      string `json:"id"`
-			Object  string `json:"object"`
-			OwnedBy string `json:"owned_by"`
+		Data []struct {
+			ID          string `json:"id"`
+			Type        string `json:"type"`
+			DisplayName string `json:"display_name"`
+			CreatedAt   string `json:"created_at"`
+			OwnedBy     string `json:"owned_by"`
 		} `json:"data"`
+		FirstID string `json:"first_id"`
+		HasMore bool   `json:"has_more"`
+		LastID  string `json:"last_id"`
 	}
 	if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Object != "list" || len(body.Data) != 2 {
+	if len(body.Data) != 2 || body.FirstID != "claude/opus-4-7" || body.LastID != "claude/sonnet-4-6" || body.HasMore {
 		t.Fatalf("body = %+v", body)
 	}
-	if body.Data[0].ID != "gpt-strong" || body.Data[0].OwnedBy != "responses" || body.Data[1].ID != "gpt-fallback" {
+	if body.Data[0].ID != "claude/opus-4-7" || body.Data[0].Type != "model" || body.Data[0].DisplayName != "claude/opus-4-7" || body.Data[0].OwnedBy != "responses" || body.Data[1].ID != "claude/sonnet-4-6" {
 		t.Fatalf("models = %+v", body.Data)
+	}
+}
+
+func TestHandleClaudeBootstrapListsVirtualModels(t *testing.T) {
+	srv, err := New(&config.Config{
+		Server: config.ServerConfig{AuthToken: "token"},
+		Routes: []config.Route{
+			{Match: "claude/opus-4-7", Provider: "responses", Model: "gpt-5.5"},
+			{Match: "claude/sonnet-4-6", Provider: "chat", Model: "gpt-5.4"},
+			{Match: "*", Provider: "responses", Model: "gpt-5.4"},
+		},
+		Providers: map[string]config.ProviderConfig{
+			"responses": {Kind: config.KindOpenAIResponses, BaseURL: "https://example.test/v1"},
+			"chat":      {Kind: config.KindOpenAIChat, BaseURL: "https://example.test/v1"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/claude_cli/bootstrap", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	rw := httptest.NewRecorder()
+	srv.handleClaudeBootstrap(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rw.Code, rw.Body.String())
+	}
+	var body struct {
+		AdditionalModelOptions []struct {
+			Model       string `json:"model"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		} `json:"additional_model_options"`
+	}
+	if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.AdditionalModelOptions) != 2 {
+		t.Fatalf("options = %+v", body.AdditionalModelOptions)
+	}
+	if body.AdditionalModelOptions[0].Model != "claude/opus-4-7" || body.AdditionalModelOptions[0].Description != "responses → gpt-5.5" {
+		t.Fatalf("first option = %+v", body.AdditionalModelOptions[0])
+	}
+	if body.AdditionalModelOptions[1].Model != "claude/sonnet-4-6" {
+		t.Fatalf("second option = %+v", body.AdditionalModelOptions[1])
 	}
 }
 
@@ -184,6 +233,29 @@ func TestHandleMessagesRejectsTooLargeBody(t *testing.T) {
 	srv.handleMessages(rw, req)
 	if rw.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d body=%s", rw.Code, rw.Body.String())
+	}
+}
+
+func TestHandleMessagesModelValidationProbeReturnsJSON(t *testing.T) {
+	srv := newTestServer(t, config.ServerConfig{}, config.KindOpenAIChat)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-test","max_tokens":1,"messages":[{"role":"user","content":"Hi"}]}`))
+	rw := httptest.NewRecorder()
+	srv.handleMessages(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rw.Code, rw.Body.String())
+	}
+	var body struct {
+		Type  string `json:"type"`
+		Model string `json:"model"`
+		Usage struct {
+			InputTokens int `json:"input_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Type != "message" || body.Model != "claude-test" || body.Usage.InputTokens == 0 {
+		t.Fatalf("body = %+v", body)
 	}
 }
 

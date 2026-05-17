@@ -281,6 +281,8 @@ Config rules:
   No anchors, flow style, or multiline strings.
 - `routes[].match` is case-insensitive substring match against incoming Claude
   model name. First match wins.
+- Claude Code's model picker only keeps model ids that start with `claude` or
+  `anthropic`, so virtual route ids should use one of those prefixes.
 - Fallback route with `match: "*"` is required.
 - `providers.<name>.kind` must be `openai_chat`, `openai_responses`, or
   `anthropic_messages`.
@@ -480,8 +482,8 @@ substring you want through it. RelayCode just forwards the request.
 
 **How do I mix providers?**
 Put multiple entries in `routes[]`. First match (case-insensitive substring on
-incoming model) wins. Example: `opus` → OpenAI Responses, `haiku` → DeepSeek
-chat, `*` → fallback.
+incoming model) wins. Example: `claude/opus` → OpenAI Responses,
+`claude/haiku` → DeepSeek chat, `*` → fallback.
 
 **Does it support image / vision?**
 Yes. Claude Code base64 image blocks map to OpenAI Chat `image_url` parts and

@@ -59,11 +59,11 @@ func TestResolveErrorsOnUnknownProvider(t *testing.T) {
 	}
 }
 
-func TestModelsReturnsConfiguredRouteModelsOnce(t *testing.T) {
+func TestModelsReturnsConfiguredVirtualModels(t *testing.T) {
 	cfg := &config.Config{
 		Routes: []config.Route{
-			{Match: "opus", Provider: "strong", Model: "gpt-strong"},
-			{Match: "sonnet", Provider: "strong", Model: "gpt-strong"},
+			{Match: "claude/opus-4-7", Provider: "strong", Model: "gpt-5.5"},
+			{Match: "kimi", Provider: "strong", Model: "kimi-k2"},
 			{Match: "*", Provider: "fallback", Model: "gpt-fallback"},
 		},
 		Providers: map[string]config.ProviderConfig{
@@ -76,10 +76,10 @@ func TestModelsReturnsConfiguredRouteModelsOnce(t *testing.T) {
 	if len(models) != 2 {
 		t.Fatalf("Models len = %d, models=%+v", len(models), models)
 	}
-	if models[0].ID != "gpt-strong" || models[0].ProviderName != "strong" || models[0].Kind != config.KindOpenAIResponses {
+	if models[0].ID != "claude/opus-4-7" || models[0].UpstreamModel != "gpt-5.5" || models[0].ProviderName != "strong" || models[0].Kind != config.KindOpenAIResponses {
 		t.Fatalf("first model = %+v", models[0])
 	}
-	if models[1].ID != "gpt-fallback" || models[1].ProviderName != "fallback" || models[1].Kind != config.KindOpenAIChat {
+	if models[1].ID != "kimi" || models[1].UpstreamModel != "kimi-k2" || models[1].ProviderName != "strong" {
 		t.Fatalf("second model = %+v", models[1])
 	}
 }

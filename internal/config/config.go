@@ -13,9 +13,10 @@ import (
 )
 
 type Config struct {
-	Server    ServerConfig
-	Routes    []Route
-	Providers map[string]ProviderConfig
+	Server         ServerConfig
+	Routes         []Route
+	Providers      map[string]ProviderConfig
+	ToolValidation ToolValidationConfig
 }
 
 type ServerConfig struct {
@@ -69,6 +70,13 @@ type ProviderConfig struct {
 	ServiceTier                        string
 	ResponsesReasoningSummary          string
 	ResponsesParallelToolCalls         *bool
+	ToolValidation                     ToolValidationConfig
+}
+
+type ToolValidationConfig struct {
+	UnknownTools       string
+	InvalidKnownTools  string
+	MalformedArguments string
 }
 
 func lookupPath(m yamlMap, path ...string) (any, bool) {
@@ -231,6 +239,11 @@ func fromDoc(doc yamlMap) (*Config, error) {
 			EnableFilepathExtractionMock: true,
 		},
 		Providers: map[string]ProviderConfig{},
+		ToolValidation: ToolValidationConfig{
+			UnknownTools:       "drop",
+			InvalidKnownTools:  "warn",
+			MalformedArguments: "repair",
+		},
 	}
 
 	if srv, ok := doc["server"].(yamlMap); ok {
@@ -265,6 +278,18 @@ func fromDoc(doc yamlMap) (*Config, error) {
 		}
 		if v := stringAtAny(srv, []string{"responses", "session_store_path"}, "responses_session_store_path"); v != "" {
 			cfg.Server.ResponsesSessionStorePath = expandEnv(v)
+		}
+	}
+
+	if tv, ok := doc["tool_validation"].(yamlMap); ok {
+		if v := strings.TrimSpace(stringAt(tv, "unknown_tools")); v != "" {
+			cfg.ToolValidation.UnknownTools = v
+		}
+		if v := strings.TrimSpace(stringAt(tv, "invalid_known_tools")); v != "" {
+			cfg.ToolValidation.InvalidKnownTools = v
+		}
+		if v := strings.TrimSpace(stringAt(tv, "malformed_arguments")); v != "" {
+			cfg.ToolValidation.MalformedArguments = v
 		}
 	}
 
@@ -327,6 +352,9 @@ func fromDoc(doc yamlMap) (*Config, error) {
 }
 
 func (c *Config) validate() error {
+	if err := validateToolValidation(c.ToolValidation); err != nil {
+		return err
+	}
 	hasFallback := false
 	for _, r := range c.Routes {
 		if r.Match == "*" {
@@ -359,6 +387,21 @@ func (c *Config) validate() error {
 		}
 		if provider.ResponsesParallelToolCalls != nil && provider.Kind != KindOpenAIResponses {
 			return fmt.Errorf("providers.%s: responses_parallel_tool_calls is only valid for openai_responses providers", name)
+		}
+	}
+	return nil
+}
+
+func validateToolValidation(tv ToolValidationConfig) error {
+	for key, value := range map[string]string{
+		"unknown_tools":       tv.UnknownTools,
+		"invalid_known_tools": tv.InvalidKnownTools,
+		"malformed_arguments": tv.MalformedArguments,
+	} {
+		switch value {
+		case "drop", "warn", "repair":
+		default:
+			return fmt.Errorf("tool_validation.%s must be drop, warn, or repair", key)
 		}
 	}
 	return nil

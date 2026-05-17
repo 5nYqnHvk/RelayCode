@@ -67,6 +67,7 @@ func (s *Server) adapterFor(name string, pc config.ProviderConfig) (provider.Ada
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pc.CompactToolResults = s.cfg.Server.CompactToolResults
+	pc.ToolValidation = s.cfg.ToolValidation
 
 	if a, ok := s.adapters[name]; ok {
 		return a, nil
@@ -101,6 +102,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/messages", s.handleMessages)
 	mux.HandleFunc("/v1/models", s.handleModels)
+	mux.HandleFunc("/api/claude_cli/bootstrap", s.handleClaudeBootstrap)
 	mux.HandleFunc("/debug/stats", s.handleStats)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -144,16 +146,72 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type modelView struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		OwnedBy string `json:"owned_by"`
+		ID          string `json:"id"`
+		Type        string `json:"type"`
+		DisplayName string `json:"display_name"`
+		CreatedAt   string `json:"created_at"`
+		OwnedBy     string `json:"owned_by,omitempty"`
 	}
 	models := s.router.Models()
 	data := make([]modelView, 0, len(models))
 	for _, model := range models {
-		data = append(data, modelView{ID: model.ID, Object: "model", OwnedBy: model.ProviderName})
+		data = append(data, modelView{
+			ID:          model.ID,
+			Type:        "model",
+			DisplayName: model.ID,
+			CreatedAt:   "2026-05-15T00:00:00Z",
+			OwnedBy:     model.ProviderName,
+		})
 	}
-	out := map[string]any{"object": "list", "data": data}
+	out := map[string]any{
+		"data": data,
+		"first_id": func() string {
+			if len(data) == 0 {
+				return ""
+			}
+			return data[0].ID
+		}(),
+		"has_more": false,
+		"last_id": func() string {
+			if len(data) == 0 {
+				return ""
+			}
+			return data[len(data)-1].ID
+		}(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
+}
+
+func (s *Server) handleClaudeBootstrap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.Server.AuthToken != "" && !authOK(r, s.cfg.Server.AuthToken) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Allow", "GET, HEAD, OPTIONS")
+	if r.Method == http.MethodHead || r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	type modelOption struct {
+		Model       string `json:"model"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	models := s.router.Models()
+	options := make([]modelOption, 0, len(models))
+	for _, model := range models {
+		options = append(options, modelOption{
+			Model:       model.ID,
+			Name:        model.ID,
+			Description: fmt.Sprintf("%s → %s", model.ProviderName, model.UpstreamModel),
+		})
+	}
+	out := map[string]any{"client_data": nil, "additional_model_options": options}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(out)
 }
@@ -241,6 +299,28 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Model == "" {
 		http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"model is required"}}`, http.StatusBadRequest)
+		return
+	}
+
+	if isModelValidationProbe(&req) {
+		if _, err := s.router.Resolve(req.Model); err != nil {
+			http.Error(w, fmt.Sprintf(`{"type":"error","error":{"type":"invalid_request_error","message":%q}}`, err.Error()), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":            newMessageID(),
+			"type":          "message",
+			"role":          "assistant",
+			"model":         req.Model,
+			"content":       []any{},
+			"stop_reason":   "end_turn",
+			"stop_sequence": nil,
+			"usage": map[string]any{
+				"input_tokens":  nonzeroInputTokens(&req),
+				"output_tokens": 1,
+			},
+		})
 		return
 	}
 
@@ -341,6 +421,29 @@ func newMessageID() string {
 	var buf [12]byte
 	_, _ = rand.Read(buf[:])
 	return "msg_" + hex.EncodeToString(buf[:])
+}
+
+func isModelValidationProbe(req *anthropic.Request) bool {
+	if req == nil || req.MaxTokens != 1 || len(req.Messages) != 1 {
+		return false
+	}
+	msg := req.Messages[0]
+	if msg.Role != "user" || len(req.Tools) != 0 {
+		return false
+	}
+	if msg.Content.Raw == "Hi" {
+		return true
+	}
+	blocks := msg.Content.AsBlocks()
+	return len(blocks) == 1 && blocks[0].Type == "text" && blocks[0].Text == "Hi"
+}
+
+func nonzeroInputTokens(req *anthropic.Request) int {
+	total := estimateInputTokens(req)
+	if total == 0 {
+		return 1
+	}
+	return total
 }
 
 func estimateInputTokens(req *anthropic.Request) int {

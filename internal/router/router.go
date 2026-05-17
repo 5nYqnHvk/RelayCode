@@ -56,15 +56,19 @@ func (r *Router) Models() []ModelInfo {
 	seen := map[string]bool{}
 	out := make([]ModelInfo, 0, len(r.routes))
 	for _, rt := range r.routes {
-		if seen[rt.Model] {
+		if rt.Match == "*" {
+			continue
+		}
+		id := rt.Match
+		if seen[id] {
 			continue
 		}
 		p, ok := r.providers[rt.Provider]
 		if !ok {
 			continue
 		}
-		seen[rt.Model] = true
-		out = append(out, ModelInfo{ID: rt.Model, ProviderName: rt.Provider, UpstreamModel: rt.Model, Kind: p.Kind})
+		seen[id] = true
+		out = append(out, ModelInfo{ID: id, ProviderName: rt.Provider, UpstreamModel: rt.Model, Kind: p.Kind})
 	}
 	return out
 }
